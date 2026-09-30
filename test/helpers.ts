@@ -204,21 +204,51 @@ export async function resetDb(): Promise<void> {
   ]);
 }
 
-export async function seedServer(overrides: Partial<{ operator_role_id: string | null; timezone: string }> = {}) {
+export async function seedServer(
+  overrides: Partial<{ guild_id: string; operator_role_id: string | null; timezone: string; reminder_mode: string }> = {},
+) {
   await env.DB.prepare(
-    "INSERT INTO servers (guild_id, announce_channel_id, operator_role_id, timezone) VALUES (?1, ?2, ?3, ?4)",
+    `INSERT INTO servers (guild_id, announce_channel_id, operator_role_id, timezone, reminder_mode)
+     VALUES (?1, ?2, ?3, ?4, ?5)`,
   )
-    .bind(GUILD_ID, CHANNEL_ID, overrides.operator_role_id ?? null, overrides.timezone ?? "Asia/Tokyo")
+    .bind(
+      overrides.guild_id ?? GUILD_ID,
+      CHANNEL_ID,
+      overrides.operator_role_id ?? null,
+      overrides.timezone ?? "Asia/Tokyo",
+      overrides.reminder_mode ?? "channel",
+    )
     .run();
 }
 
-export async function seedEvent(opts: { startAt: number; title?: string; messageId?: string; guildId?: string }) {
+export async function seedEvent(opts: {
+  startAt: number;
+  title?: string;
+  messageId?: string;
+  guildId?: string;
+  createdAt?: number;
+}) {
   const row = await env.DB.prepare(
-    "INSERT INTO events (guild_id, channel_id, message_id, title, start_at) VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
+    `INSERT INTO events (guild_id, channel_id, message_id, title, start_at, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING id`,
   )
-    .bind(opts.guildId ?? GUILD_ID, CHANNEL_ID, opts.messageId ?? null, opts.title ?? "読書会", opts.startAt)
+    .bind(
+      opts.guildId ?? GUILD_ID,
+      CHANNEL_ID,
+      opts.messageId ?? null,
+      opts.title ?? "読書会",
+      opts.startAt,
+      opts.createdAt ?? opts.startAt - 7 * 86400,
+    )
     .first<{ id: number }>();
   return row!.id;
+}
+
+/** 偽の Discord に告知メッセージを置き、その ID を返す */
+export function seedMessage(discord: FakeDiscord, description = "日時　<t:1:F>\n主催　<@1>"): string {
+  const id = String(800000000000000000n + BigInt(discord.messages.size));
+  discord.messages.set(id, { id, channel_id: CHANNEL_ID, embeds: [{ title: "📅 読書会", description }], components: [] });
+  return id;
 }
 
 export function nowSec(): number {

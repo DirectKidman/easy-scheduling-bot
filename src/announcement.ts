@@ -30,3 +30,21 @@ export async function refreshAnnouncement(env: Env, event: EventRow): Promise<Re
     throw err;
   }
 }
+
+/**
+ * 告知メッセージが Discord 上に残っているかだけを確認する（GET 1 回）。
+ * 消されていればイベントを message_deleted にして false を返す。
+ */
+export async function announcementExists(env: Env, event: EventRow): Promise<boolean> {
+  if (!event.message_id) return true;
+  try {
+    await discordRequest(env, "GET", `/channels/${event.channel_id}/messages/${event.message_id}`);
+    return true;
+  } catch (err) {
+    if (isDiscordError(err, DiscordErrorCode.UnknownMessage, DiscordErrorCode.UnknownChannel)) {
+      await transitionEventState(env.DB, event.id, "scheduled", "message_deleted");
+      return false;
+    }
+    throw err;
+  }
+}

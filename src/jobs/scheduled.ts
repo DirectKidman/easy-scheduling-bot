@@ -1,9 +1,13 @@
 import { purgeEventsBefore } from "../db/queries";
 import { retentionDays, type Env } from "../env";
 import { logError } from "../interaction";
+import { checkAnnouncements, checkGuilds } from "./checks";
+import { runReminders } from "./reminders";
 
+// wrangler.jsonc の triggers.crons と一致させる。Cron ごとに別の実行になり、サブリクエスト数の上限も別に数えられる
 export const HOURLY_CRON = "0 * * * *";
 export const DAILY_CRON = "7 18 * * *";
+export const DAILY_MESSAGE_CHECK_CRON = "37 18 * * *";
 
 const DAY = 24 * 60 * 60;
 
@@ -25,7 +29,18 @@ export async function runScheduled(cron: string, env: Env, now: number): Promise
     }
   };
 
-  if (cron === DAILY_CRON) {
-    await run("purge", () => purgeExpiredEvents(env, now));
+  switch (cron) {
+    case HOURLY_CRON:
+      await run("reminders", () => runReminders(env, now));
+      break;
+    case DAILY_CRON:
+      await run("purge", () => purgeExpiredEvents(env, now));
+      await run("guild check", () => checkGuilds(env, now));
+      break;
+    case DAILY_MESSAGE_CHECK_CRON:
+      await run("announcement check", () => checkAnnouncements(env, now));
+      break;
+    default:
+      console.error(`unknown cron: ${cron}`);
   }
 }
