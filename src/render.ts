@@ -30,14 +30,22 @@ export function mention(userId: string): string {
   return `<@${userId}>`;
 }
 
+/** 「<開始> 〜 <終了>（あと何日）」。終了は日付をまたぐ長さなら日付付きで出す */
+export function formatTimeRange(startAt: number, durationMinutes: number): string {
+  const end = startAt + durationMinutes * 60;
+  const endStyle = durationMinutes >= 24 * 60 ? "f" : "t";
+  return `<t:${startAt}:F> 〜 <t:${end}:${endStyle}>（<t:${startAt}:R>）`;
+}
+
 /** 告知メッセージ本文（日時・場所・主催・説明）。作成時にだけ作り、以後はメッセージ側を正とする。 */
 export function buildHeader(opts: {
   startAt: number;
+  durationMinutes: number;
   location?: string;
   hostId: string;
   description?: string;
 }): string {
-  const lines = [`日時　<t:${opts.startAt}:F>（<t:${opts.startAt}:R>）`];
+  const lines = [`日時　${formatTimeRange(opts.startAt, opts.durationMinutes)}`];
   if (opts.location) lines.push(`場所　${opts.location}`);
   lines.push(`主催　${mention(opts.hostId)}`);
   let text = lines.join("\n");
@@ -46,8 +54,8 @@ export function buildHeader(opts: {
 }
 
 /** メッセージの埋め込みが読めない場合の代替ヘッダー */
-export function fallbackHeader(event: Pick<EventRow, "start_at">): string {
-  return `日時　<t:${event.start_at}:F>（<t:${event.start_at}:R>）`;
+export function fallbackHeader(event: Pick<EventRow, "start_at" | "duration_minutes">): string {
+  return `日時　${formatTimeRange(event.start_at, event.duration_minutes)}`;
 }
 
 export function groupResponses(responses: ResponseRow[]): Record<RsvpStatus, string[]> {

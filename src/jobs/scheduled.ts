@@ -1,3 +1,4 @@
+import { purgePollsBefore } from "../db/polls";
 import { purgeEventsBefore } from "../db/queries";
 import { retentionDays, type Env } from "../env";
 import { logError } from "../interaction";
@@ -11,11 +12,13 @@ export const DAILY_MESSAGE_CHECK_CRON = "37 18 * * *";
 
 const DAY = 24 * 60 * 60;
 
-/** 時間経過の削除: 開始日時から保持期間を過ぎたイベントと回答を物理削除する（冪等） */
+/** 時間経過の削除: 開始日時から保持期間を過ぎたイベント・日程調整と回答を物理削除する（冪等） */
 export async function purgeExpiredEvents(env: Env, now: number): Promise<number> {
   const cutoff = now - retentionDays(env) * DAY;
   const deleted = await purgeEventsBefore(env.DB, cutoff);
-  console.log(`purge: deleted ${deleted} events`);
+  // 日程調整は、最後の候補日から保持期間を過ぎたら消す（確定したものはイベントに移って消えている）
+  const polls = await purgePollsBefore(env.DB, cutoff);
+  console.log(`purge: deleted ${deleted} events, ${polls} polls`);
   return deleted;
 }
 

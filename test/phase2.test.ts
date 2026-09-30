@@ -72,7 +72,7 @@ describe("/forget", () => {
     await seedHistory();
     const res = await interact(command("forget"));
     expect(res.data.flags).toBe(MessageFlags.Ephemeral);
-    expect(res.data.content).toContain("過去分だけ: 終了済みイベントへの回答 1 件");
+    expect(res.data.content).toContain("過去分だけ: 終了済みのイベント・候補日への回答 1 件");
     expect(res.data.content).toContain("すべて: 全サーバー分の回答 2 件");
     expect(res.data.components[0].components.map((c: { custom_id: string }) => c.custom_id)).toEqual([
       "forget:past",

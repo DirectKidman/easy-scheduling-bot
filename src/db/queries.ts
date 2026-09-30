@@ -18,6 +18,7 @@ export interface EventRow {
   message_id: string | null;
   title: string;
   start_at: number;
+  duration_minutes: number;
   state: EventState;
 }
 
@@ -98,7 +99,7 @@ export async function deleteServer(db: D1Database, guildId: string): Promise<voi
 
 // ---- events ----
 
-const EVENT_COLUMNS = "id, guild_id, channel_id, message_id, title, start_at, state";
+const EVENT_COLUMNS = "id, guild_id, channel_id, message_id, title, start_at, duration_minutes, state";
 
 export function getEvent(db: D1Database, id: number): Promise<EventRow | null> {
   return db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE id = ?1`).bind(id).first<EventRow>();
@@ -106,14 +107,14 @@ export function getEvent(db: D1Database, id: number): Promise<EventRow | null> {
 
 export async function insertEvent(
   db: D1Database,
-  e: Pick<EventRow, "guild_id" | "channel_id" | "title" | "start_at">,
+  e: Pick<EventRow, "guild_id" | "channel_id" | "title" | "start_at" | "duration_minutes">,
 ): Promise<number> {
   const row = await db
     .prepare(
-      `INSERT INTO events (guild_id, channel_id, title, start_at)
-       VALUES (?1, ?2, ?3, ?4) RETURNING id`,
+      `INSERT INTO events (guild_id, channel_id, title, start_at, duration_minutes)
+       VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id`,
     )
-    .bind(e.guild_id, e.channel_id, e.title, e.start_at)
+    .bind(e.guild_id, e.channel_id, e.title, e.start_at, e.duration_minutes)
     .first<{ id: number }>();
   if (!row) throw new Error("insertEvent returned no row");
   return row.id;
@@ -176,7 +177,7 @@ export async function listReminderCandidates(
 ): Promise<ReminderCandidate[]> {
   const res = await db
     .prepare(
-      `SELECT e.id, e.guild_id, e.channel_id, e.message_id, e.title, e.start_at, e.state, e.created_at,
+      `SELECT e.id, e.guild_id, e.channel_id, e.message_id, e.title, e.start_at, e.duration_minutes, e.state, e.created_at,
               e.reminded_day_before_at, e.reminded_day_of_at, s.reminder_mode
        FROM events e JOIN servers s ON s.guild_id = e.guild_id
        WHERE e.state = 'scheduled' AND e.message_id IS NOT NULL
@@ -330,4 +331,28 @@ export async function deletePastResponses(db: D1Database, userId: string, now: n
 export async function deleteAllResponses(db: D1Database, userId: string): Promise<number> {
   const res = await db.prepare(`DELETE FROM responses WHERE user_id = ?1`).bind(userId).run();
   return res.meta.changes;
+}
+
+export interface CommitmentRow extends UpcomingRow {
+  duration_minutes: number;
+}
+
+/** 予定の重なり判定用: [from, to) と時間が重なる、参加・未定と回答した予定のイベント */
+export async function listCommitmentsForUser(
+  db: D1Database,
+  userId: string,
+  from: number,
+  to: number,
+): Promise<CommitmentRow[]> {
+  const res = await db
+    .prepare(
+      `SELECT e.id AS event_id, e.guild_id, e.channel_id, e.message_id, e.title, e.start_at, e.duration_minutes, r.status
+       FROM responses r JOIN events e ON e.id = r.event_id
+       WHERE r.user_id = ?1 AND e.state = 'scheduled' AND r.status IN ('going', 'maybe')
+         AND e.start_at < ?3 AND e.start_at + e.duration_minutes * 60 > ?2
+       ORDER BY e.start_at, e.id`,
+    )
+    .bind(userId, from, to)
+    .all<CommitmentRow>();
+  return res.results;
 }

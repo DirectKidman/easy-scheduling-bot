@@ -17,7 +17,8 @@ import {
   type ServerRow,
 } from "../db/queries";
 import { isOperator } from "../discord/permissions";
-import { defer, ephemeral, ephemeralMessage, type Context } from "../interaction";
+import { collectBusy, fetchGuildNames, formatBusyLine } from "../conflicts";
+import { defer, ephemeral, ephemeralMessage, followupEphemeral, logError, type Context } from "../interaction";
 import { buildAnnouncement, buildRosterDetail, fallbackHeader, STATUSES } from "../render";
 
 const GONE = "このイベントは見つかりませんでした（削除された可能性があります）。";
@@ -70,6 +71,10 @@ async function handleRsvp(
   await upsertResponse(ctx.env.DB, event.id, interaction.member.user.id, status as RsvpStatus, ctx.now);
   const responses = await listResponses(ctx.env.DB, event.id);
   const header = interaction.message.embeds[0]?.description ?? fallbackHeader(event);
+
+  if (status === "going" || status === "maybe") {
+    ctx.exec.waitUntil(warnConflicts(ctx, interaction, event));
+  }
 
   // ボタンが付いたメッセージそのものを応答で書き換える（REST の投稿レート制限を消費しない）。
   // 毎回 DB 全体から再生成するので、連打や同時押しでも最終的に DB と一致する。
@@ -146,4 +151,36 @@ function executeCancel(
       components: [],
     };
   });
+}
+
+/**
+ * 参加・未定にしたとき、同じ時間帯に他の予定（全サーバー横断）があれば本人にだけ知らせる。
+ * 回答自体は受け付ける（止めない）。
+ */
+async function warnConflicts(
+  ctx: Context,
+  interaction: APIMessageComponentGuildInteraction,
+  event: EventRow,
+): Promise<void> {
+  try {
+    const end = event.start_at + event.duration_minutes * 60;
+    const busy = await collectBusy(ctx.env, interaction.member.user.id, event.start_at, end, { eventId: event.id });
+    if (busy.length === 0) return;
+    const names = await fetchGuildNames(ctx.env, busy.map((b) => b.guild_id));
+    const body = {
+      content: [
+        `⚠️ 「${event.title}」の時間帯に、他の予定があります（あなたにだけ表示）`,
+        ...busy.map((b) => `・${formatBusyLine(b, names)}`),
+      ].join("\n"),
+    };
+    try {
+      await followupEphemeral(ctx.env, interaction.token, body);
+    } catch {
+      // ボタンへの応答が Discord に届く前に追加メッセージを送ってしまった場合に備え、少し待って 1 回だけ再送する
+      await new Promise((r) => setTimeout(r, 1000));
+      await followupEphemeral(ctx.env, interaction.token, body);
+    }
+  } catch (err) {
+    logError("conflict warning failed", err);
+  }
 }

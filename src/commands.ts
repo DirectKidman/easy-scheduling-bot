@@ -62,8 +62,13 @@ export const COMMANDS: RESTPutAPIApplicationCommandsJSONBody = [
   },
   {
     ...guildOnly,
+    name: "poll",
+    description: "候補日を並べて日程調整します（運営者のみ）",
+  },
+  {
+    ...guildOnly,
     name: "my",
-    description: "参加・未定と回答した今後の予定を、サーバーをまたいで表示します",
+    description: "参加・未定と回答した今後の予定と、回答中の日程調整を、サーバーをまたいで表示します",
   },
   {
     ...guildOnly,

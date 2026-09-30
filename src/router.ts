@@ -13,6 +13,7 @@ import { handleButton } from "./handlers/buttons";
 import { EVENT_MODAL_ID, handleEventCommand, handleEventModal } from "./handlers/event";
 import { FORGET_PREFIX, handleForgetButton, handleForgetCommand } from "./handlers/forget";
 import { handleMy } from "./handlers/my";
+import { handlePollCommand, handlePollComponent, handlePollModal, POLL_MODAL_ID, POLL_PREFIX } from "./handlers/poll";
 import { handleSetup } from "./handlers/setup";
 import { ephemeral, type Context } from "./interaction";
 
@@ -37,19 +38,26 @@ export async function routeInteraction(ctx: Context, interaction: APIInteraction
           return handleMy(ctx, cmd);
         case "forget":
           return handleForgetCommand(ctx, cmd);
+        case "poll":
+          return handlePollCommand(ctx, cmd);
       }
       break;
     }
-    case InteractionType.MessageComponent:
-      if (interaction.data.component_type === ComponentType.Button) {
-        const component = interaction as APIMessageComponentGuildInteraction;
+    case InteractionType.MessageComponent: {
+      const component = interaction as APIMessageComponentGuildInteraction;
+      if (component.data.custom_id.startsWith(POLL_PREFIX)) return handlePollComponent(ctx, component);
+      if (component.data.component_type === ComponentType.Button) {
         if (component.data.custom_id.startsWith(FORGET_PREFIX)) return handleForgetButton(ctx, component);
         return handleButton(ctx, component);
       }
       break;
+    }
     case InteractionType.ModalSubmit:
       if (interaction.data.custom_id === EVENT_MODAL_ID) {
         return handleEventModal(ctx, interaction as APIModalSubmitGuildInteraction);
+      }
+      if (interaction.data.custom_id === POLL_MODAL_ID) {
+        return handlePollModal(ctx, interaction as APIModalSubmitGuildInteraction);
       }
       break;
   }

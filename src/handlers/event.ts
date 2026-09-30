@@ -12,13 +12,13 @@ import { isOperator } from "../discord/permissions";
 import { DiscordErrorCode, discordRequest, isDiscordError } from "../discord/rest";
 import { defer, ephemeral, type Context } from "../interaction";
 import { buildAnnouncement, buildHeader, messageLink } from "../render";
-import { parseEventDateTime } from "../time";
+import { parseDuration, parseEventDateTime } from "../time";
 import { getModalValue } from "./options";
 
 export const EVENT_MODAL_ID = "event:create";
 
 /** 未来すぎる日時の入力ミスを防ぐ上限（2年） */
-const MAX_AHEAD_SECONDS = 2 * 366 * 24 * 60 * 60;
+export const MAX_AHEAD_SECONDS = 2 * 366 * 24 * 60 * 60;
 
 const NOT_SET_UP = "このサーバーはまだ設定されていません。サーバー管理者が `/setup` を実行してください。";
 const NOT_OPERATOR = "イベントを作成できるのは運営者（サーバー管理権限または運営ロールを持つ人）だけです。";
@@ -49,6 +49,12 @@ export async function handleEventCommand(
           max_length: 40,
           placeholder: "2026-10-11 19:00",
         }),
+        input("duration", "所要時間（任意・省略時は2時間）", {
+          style: TextInputStyle.Short,
+          required: false,
+          max_length: 20,
+          placeholder: "2h / 90m / 1時間30分",
+        }),
         input("location", "場所（任意）", { style: TextInputStyle.Short, required: false, max_length: 100 }),
         input("description", "説明（任意）", { style: TextInputStyle.Paragraph, required: false, max_length: 1000 }),
       ],
@@ -75,6 +81,8 @@ export async function handleEventModal(
   if (!parsed.ok) return ephemeral(`⚠️ ${parsed.reason}`);
   if (parsed.unix <= ctx.now) return ephemeral("⚠️ 過去の日時は指定できません。");
   if (parsed.unix > ctx.now + MAX_AHEAD_SECONDS) return ephemeral("⚠️ 2年以上先の日時は指定できません。");
+  const duration = parseDuration(getModalValue(interaction, "duration"));
+  if (!duration.ok) return ephemeral(`⚠️ ${duration.reason}`);
 
   const hostId = interaction.member.user.id;
   return defer(ctx, interaction.token, "message", async () => {
@@ -83,6 +91,7 @@ export async function handleEventModal(
       channel_id: server.announce_channel_id,
       title,
       start_at: parsed.unix,
+      duration_minutes: duration.minutes,
     });
     const event: EventRow = {
       id: eventId,
@@ -91,9 +100,10 @@ export async function handleEventModal(
       message_id: null,
       title,
       start_at: parsed.unix,
+      duration_minutes: duration.minutes,
       state: "scheduled",
     };
-    const header = buildHeader({ startAt: parsed.unix, location, hostId, description });
+    const header = buildHeader({ startAt: parsed.unix, durationMinutes: duration.minutes, location, hostId, description });
 
     let message: APIMessage;
     try {
