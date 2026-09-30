@@ -40,6 +40,14 @@ export function editOriginal(env: Env, token: string, body: MessageBody): Promis
   );
 }
 
+/** 応答の後に、本人にだけ見える追加メッセージを送る */
+export function followupEphemeral(env: Env, token: string, body: MessageBody): Promise<unknown> {
+  return discordRequest(env, "POST", `/webhooks/${env.DISCORD_APPLICATION_ID}/${token}`, {
+    body: { allowed_mentions: { parse: [] }, ...body, flags: MessageFlags.Ephemeral },
+    noAuth: true,
+  });
+}
+
 /**
  * 3 秒以内に「処理中」の応答を返し、重い処理は応答後に行って元のメッセージを編集する。
  * mode: "message" は新しい（自分にだけ見える）メッセージ、"update" はボタンが付いたメッセージの更新。

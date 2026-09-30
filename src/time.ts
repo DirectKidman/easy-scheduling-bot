@@ -131,3 +131,57 @@ export function parseEventDateTime(input: string, tz: string, nowMs: number): Pa
   }
   return { ok: true, unix: Math.floor(utcMs / 1000) };
 }
+
+export const DEFAULT_DURATION_MINUTES = 120;
+const MAX_DURATION_MINUTES = 7 * 24 * 60;
+
+/**
+ * 所要時間の入力を分に変換する。空なら既定値（2時間）。
+ * 「2h」「90m」「1h30m」「1.5h」「2時間」「90分」「1時間30分」「90」（分）を受け付ける。
+ */
+export function parseDuration(input: string | undefined): { ok: true; minutes: number } | { ok: false; reason: string } {
+  const s = (input ?? "").normalize("NFKC").trim().toLowerCase().replace(/\s+/g, "");
+  if (!s) return { ok: true, minutes: DEFAULT_DURATION_MINUTES };
+  const m = /^(?:(\d+(?:\.\d+)?)(?:h|時間))?(?:(\d+)(?:m|min|分)?)?$/.exec(s);
+  let minutes = NaN;
+  if (m && (m[1] !== undefined || m[2] !== undefined)) {
+    minutes = Math.round(Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0));
+  }
+  if (!Number.isFinite(minutes) || minutes < 5 || minutes > MAX_DURATION_MINUTES) {
+    return { ok: false, reason: "所要時間は「2h」「90m」「1時間30分」のように、5分〜7日の範囲で入力してください。" };
+  }
+  return { ok: true, minutes };
+}
+
+const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+
+/** 「10/11(土) 19:00」形式。セレクトメニューのラベルなど、Discord のタイムスタンプ記法が使えない場所用 */
+export function formatLocalShort(unix: number, tz: string): string {
+  const p = toLocalParts(unix * 1000, tz);
+  const wd = WEEKDAYS[new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay()];
+  return `${p.month}/${p.day}(${wd}) ${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
+}
+
+export const MAX_CANDIDATES = 20;
+
+/** 候補日の一覧（1 行 1 候補）を解釈する。重複は除き、日時順に並べる */
+export function parseCandidates(
+  input: string,
+  tz: string,
+  nowMs: number,
+): { ok: true; unix: number[] } | { ok: false; reason: string } {
+  const lines = input
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length < 2) return { ok: false, reason: "候補日は 2 つ以上、1 行に 1 つずつ入力してください。" };
+  if (lines.length > MAX_CANDIDATES) return { ok: false, reason: `候補日は ${MAX_CANDIDATES} 個までです。` };
+  const result = new Set<number>();
+  for (const [i, line] of lines.entries()) {
+    const parsed = parseEventDateTime(line, tz, nowMs);
+    if (!parsed.ok) return { ok: false, reason: `${i + 1} 行目「${line}」: ${parsed.reason}` };
+    if (parsed.unix * 1000 <= nowMs) return { ok: false, reason: `${i + 1} 行目「${line}」: 過去の日時です。` };
+    result.add(parsed.unix);
+  }
+  return { ok: true, unix: [...result].sort((a, b) => a - b) };
+}

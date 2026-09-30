@@ -115,6 +115,18 @@ export function button(customId: string, message: object = { embeds: [] }, actor
   };
 }
 
+export function select(customId: string, values: string[], message: object = { embeds: [] }, actor: Actor = {}) {
+  return {
+    id: "1",
+    type: InteractionType.MessageComponent,
+    guild_id: actor.guildId ?? GUILD_ID,
+    channel_id: CHANNEL_ID,
+    member: member(actor),
+    message: { id: "m", channel_id: CHANNEL_ID, ...message },
+    data: { custom_id: customId, component_type: ComponentType.StringSelect, values },
+  };
+}
+
 // ---- Discord REST API の偽物 ----
 
 export interface FakeMessage {
@@ -150,8 +162,14 @@ export class FakeDiscord {
     return this.calls.filter((c) => c.method === method && pattern.test(c.path));
   }
 
+  /** 最初の応答（処理中）を後から書き換えた内容 */
   followups() {
     return this.callsTo("PATCH", /^\/webhooks\/.*\/messages\/@original$/).map((c) => c.body);
+  }
+
+  /** 応答の後に追加で送ったメッセージ */
+  extraMessages() {
+    return this.callsTo("POST", /^\/webhooks\/\d+\/[^/]+$/).map((c) => c.body);
   }
 
   private id(): string {
@@ -188,6 +206,9 @@ export class FakeDiscord {
     if ((m = /^\/channels\/dm(\d+)\/messages$/.exec(path)) && method === "POST") {
       if (this.closedDms.has(m[1]!)) return err(403, 50007);
       return ok({ id: this.id(), channel_id: `dm${m[1]}`, ...body });
+    }
+    if (/^\/webhooks\/\d+\/[^/]+$/.test(path) && method === "POST") {
+      return ok({ id: this.id(), ...body });
     }
     if (/^\/webhooks\/\d+\/[^/]+\/messages\/@original$/.test(path) && method === "PATCH") {
       return ok({ id: this.id(), ...body });
@@ -227,10 +248,11 @@ export async function seedEvent(opts: {
   messageId?: string;
   guildId?: string;
   createdAt?: number;
+  durationMinutes?: number;
 }) {
   const row = await env.DB.prepare(
-    `INSERT INTO events (guild_id, channel_id, message_id, title, start_at, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING id`,
+    `INSERT INTO events (guild_id, channel_id, message_id, title, start_at, created_at, duration_minutes)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id`,
   )
     .bind(
       opts.guildId ?? GUILD_ID,
@@ -239,6 +261,7 @@ export async function seedEvent(opts: {
       opts.title ?? "読書会",
       opts.startAt,
       opts.createdAt ?? opts.startAt - 7 * 86400,
+      opts.durationMinutes ?? 120,
     )
     .first<{ id: number }>();
   return row!.id;
@@ -253,4 +276,33 @@ export function seedMessage(discord: FakeDiscord, description = "日時　<t:1:F
 
 export function nowSec(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+/** 日程調整と候補日を DB に直接作る。候補 ID を開始日時の順で返す */
+export async function seedPoll(opts: {
+  starts: number[];
+  title?: string;
+  messageId?: string;
+  guildId?: string;
+  durationMinutes?: number;
+}): Promise<{ pollId: number; candidateIds: number[] }> {
+  const poll = await env.DB.prepare(
+    `INSERT INTO polls (guild_id, channel_id, message_id, title, duration_minutes) VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id`,
+  )
+    .bind(opts.guildId ?? GUILD_ID, CHANNEL_ID, opts.messageId ?? null, opts.title ?? "ボドゲ会", opts.durationMinutes ?? 120)
+    .first<{ id: number }>();
+  const candidateIds: number[] = [];
+  for (const [i, start] of opts.starts.entries()) {
+    const c = await env.DB.prepare(
+      "INSERT INTO poll_candidates (poll_id, position, start_at) VALUES (?1, ?2, ?3) RETURNING id",
+    )
+      .bind(poll!.id, i + 1, start)
+      .first<{ id: number }>();
+    candidateIds.push(c!.id);
+  }
+  return { pollId: poll!.id, candidateIds };
+}
+
+export async function seedVote(candidateId: number, userId: string, value: "yes" | "maybe") {
+  await env.DB.prepare("INSERT INTO poll_votes VALUES (?1, ?2, ?3, 1)").bind(candidateId, userId, value).run();
 }
