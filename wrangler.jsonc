@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "easy-scheduling-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-15",
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "easy-scheduling-bot",
+      // `wrangler d1 create easy-scheduling-bot` で出力された ID に置き換える
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "triggers": {
+    // 毎時: リマインド / 毎日 18:07 UTC (03:07 JST): 削除・確認ジョブ
+    "crons": ["0 * * * *", "7 18 * * *"]
+  },
+  "vars": {
+    // 終了（開始日時）後、イベントと回答を保持する日数
+    "RETENTION_DAYS": "30"
+  }
+  // シークレット（リポジトリに入れない）:
+  //   wrangler secret put DISCORD_PUBLIC_KEY
+  //   wrangler secret put DISCORD_BOT_TOKEN
+  //   wrangler secret put DISCORD_APPLICATION_ID
+}

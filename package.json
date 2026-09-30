@@ -1,0 +1,26 @@
+{
+  "name": "easy-scheduling-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "register": "tsx scripts/register-commands.ts",
+    "db:migrate:local": "wrangler d1 migrations apply easy-scheduling-bot --local",
+    "db:migrate:remote": "wrangler d1 migrations apply easy-scheduling-bot --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260930.1",
+    "@vitest/runner": "^4.1.11",
+    "@vitest/snapshot": "^4.1.11",
+    "discord-api-types": "^0.38.56",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.144.0"
+  }
+}

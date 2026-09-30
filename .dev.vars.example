@@ -1,0 +1,4 @@
+# `wrangler dev` 用。.dev.vars にコピーして値を入れる（.dev.vars はコミットしない）
+DISCORD_PUBLIC_KEY=
+DISCORD_BOT_TOKEN=
+DISCORD_APPLICATION_ID=
