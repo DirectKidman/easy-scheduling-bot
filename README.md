@@ -4,6 +4,7 @@ Discord の中だけでイベントの作成・参加確認・確認ができる
 Cloudflare Workers（HTTP インタラクション）+ D1 + Cron Triggers で動かす。TypeScript 製。
 
 - 要件定義: [docs/requirements.md](docs/requirements.md)
+- 構成と仕組み: [docs/architecture.md](docs/architecture.md)
 
 ## コマンド
 
