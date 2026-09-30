@@ -1,9 +1,96 @@
 # easy-scheduling-bot
 
 Discord の中だけでイベントの作成・参加確認・確認ができる bot。
-Cloudflare Workers（HTTP インタラクション）+ D1 + Cron Triggers で動かす。
+Cloudflare Workers（HTTP インタラクション）+ D1 + Cron Triggers で動かす。TypeScript 製。
 
 - 要件定義: [docs/requirements.md](docs/requirements.md)
+
+## コマンド
+
+| コマンド | 実行者 | 内容 |
+|---|---|---|
+| `/setup` | サーバー管理権限 | 告知チャンネル・運営ロール・タイムゾーンを設定 |
+| `/event` | 運営者 | モーダルでイベントを作成し、告知メッセージを投稿 |
+| `/my` | 全員 | 参加・未定と回答した今後の予定を、サーバー横断で表示（自分にだけ見える） |
+
+告知メッセージには [✅ 参加] [🤔 未定] [❌ 不参加] [⋯ 詳細] のボタンが付く。
+「詳細」からは全員の回答一覧を見られ、運営者にはイベントの中止ボタンも表示される。
+
+日時は `2026-10-11 19:00`、`10/11 19:00`、`10月11日 19時` のように入力し、`/setup` で設定したタイムゾーンで解釈して UTC で保存する。
+
+## セットアップ
+
+### 1. Discord アプリを作る
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) でアプリを作成
+2. **General Information** の `Application ID` と `Public Key` を控える
+3. **Bot** でトークンを発行して控える。Privileged Gateway Intents（Message Content / Server Members / Presence）は**すべてオフのまま**でよい
+4. **Installation** で Guild Install のみを有効にし、スコープ `bot` `applications.commands`、権限 `View Channels` `Send Messages` `Embed Links` `Read Message History` を付けたリンクでサーバーに招待する
+
+### 2. Cloudflare にデプロイ
+
+```sh
+npm ci
+npx wrangler login
+npx wrangler d1 create easy-scheduling-bot   # 出力された database_id を wrangler.jsonc に書く
+npm run db:migrate:remote
+
+npx wrangler secret put DISCORD_PUBLIC_KEY
+npx wrangler secret put DISCORD_BOT_TOKEN
+npx wrangler secret put DISCORD_APPLICATION_ID
+
+npm run deploy
+```
+
+デプロイ後、Developer Portal の **General Information → Interactions Endpoint URL** に Worker の URL（`https://easy-scheduling-bot.<アカウント>.workers.dev/`）を登録する。
+Discord が署名付きの PING を送り、検証に通れば保存できる。
+
+### 3. スラッシュコマンドを登録
+
+```sh
+DISCORD_APPLICATION_ID=... DISCORD_BOT_TOKEN=... npm run register
+# 開発中は DISCORD_GUILD_ID=... を付けると、そのサーバーにだけ即時反映される
+```
+
+コマンドの定義（`src/commands.ts`）を変えたら再実行する。
+
+## 開発
+
+```sh
+npm test            # Workers ランタイム（Miniflare）+ D1 でのテスト
+npm run typecheck
+npm run db:migrate:local && npm run dev   # .dev.vars.example を .dev.vars にコピーして値を入れておく
+```
+
+ローカルの `wrangler dev` を Discord から叩くには、`cloudflared tunnel` などで公開 URL を作って Interactions Endpoint URL に設定する。
+
+### 構成
+
+```
+src/
+  index.ts            fetch（インタラクション）と scheduled（Cron）の入口
+  verify.ts           Ed25519 署名検証
+  router.ts           インタラクションの振り分け
+  handlers/           /setup /event /my とボタンの処理
+  announcement.ts     告知メッセージの再描画（REST）
+  render.ts           告知メッセージ・名簿の組み立て
+  time.ts             タイムゾーン付き日時の解釈
+  db/queries.ts       D1 のクエリ
+  jobs/scheduled.ts   定期ジョブ
+  discord/            REST クライアントと権限判定
+migrations/           D1 のマイグレーション
+scripts/              コマンド登録スクリプト
+test/                 テスト
+```
+
+### 設計メモ
+
+- 状態はすべて D1 に置く。ボタンの `custom_id` は `rsvp:<イベントID>:<回答>` のようにイベント ID と操作を埋め込み、押されるたびに DB を見て処理する
+- 回答ボタンは、押されたメッセージそのものをインタラクションの応答（`UPDATE_MESSAGE`）で書き換える。REST の投稿レート制限を消費せず、毎回 DB 全体から再生成するので連打しても食い違わない
+- 場所・説明は DB に保存せず、告知メッセージの埋め込みにだけ持つ。再描画時はメッセージ側の本文を引き継ぐ
+- 重い処理（投稿、`/my` のサーバー名取得）は先に「処理中」を返し、`waitUntil` で後から結果を書き込む
+- 権限はコマンドの `default_member_permissions` に頼らず、コマンド・モーダル送信・ボタン押下のたびに bot 側で確認する
+- ログにはイベント内容・回答内容を出さない（エラーの種類と API のパス・コードだけ）
 
 ## ブランチ運用
 
