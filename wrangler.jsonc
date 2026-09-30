@@ -1,0 +1,35 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "easy-scheduling-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-15",
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "easy-scheduling-bot",
+      // `wrangler d1 create easy-scheduling-bot` で出力された ID に置き換える
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "triggers": {
+    // src/jobs/scheduled.ts と一致させる
+    //   毎時: リマインド
+    //   毎日 18:07 UTC (03:07 JST): 時間経過の削除、bot 外しの確認
+    //   毎日 18:37 UTC (03:37 JST): 告知メッセージの存在確認
+    "crons": ["0 * * * *", "7 18 * * *", "37 18 * * *"]
+  },
+  "vars": {
+    // 終了（開始日時）後、イベントと回答を保持する日数
+    "RETENTION_DAYS": "30",
+    // bot が外されたと判定してから、そのサーバーのデータを消すまでの猶予日数
+    "GUILD_GRACE_DAYS": "14",
+    // 定期ジョブ 1 回あたりの Discord API 呼び出し数の上限（Workers のサブリクエスト上限より少なく）
+    "SUBREQUEST_BUDGET": "40"
+  }
+  // シークレット（リポジトリに入れない）:
+  //   wrangler secret put DISCORD_PUBLIC_KEY
+  //   wrangler secret put DISCORD_BOT_TOKEN
+  //   wrangler secret put DISCORD_APPLICATION_ID
+}
