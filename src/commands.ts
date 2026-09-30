@@ -43,6 +43,16 @@ export const COMMANDS: RESTPutAPIApplicationCommandsJSONBody = [
         required: false,
         max_length: 64,
       },
+      {
+        type: ApplicationCommandOptionType.String,
+        name: "reminder",
+        description: "リマインドの送り方（省略時は現在の設定、初回はチャンネル）",
+        required: false,
+        choices: [
+          { name: "告知チャンネルでメンション", value: "channel" },
+          { name: "DM（届かない人は告知チャンネルでメンション）", value: "dm" },
+        ],
+      },
     ],
   },
   {
@@ -54,5 +64,10 @@ export const COMMANDS: RESTPutAPIApplicationCommandsJSONBody = [
     ...guildOnly,
     name: "my",
     description: "参加・未定と回答した今後の予定を、サーバーをまたいで表示します",
+  },
+  {
+    ...guildOnly,
+    name: "forget",
+    description: "自分の回答を削除します（過去分だけ／すべて）",
   },
 ];
