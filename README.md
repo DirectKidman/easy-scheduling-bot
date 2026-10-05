@@ -73,7 +73,8 @@ Discord が署名付きの PING を送り、検証に通れば保存できる。
 ### 3. スラッシュコマンドを登録
 
 ```sh
-DISCORD_APPLICATION_ID=... DISCORD_BOT_TOKEN=... npm run register
+npm run register
+# .env の DISCORD_APPLICATION_ID・DISCORD_BOT_TOKEN を読む（環境変数で渡しても可。環境変数が優先）
 # 開発中は DISCORD_GUILD_ID=... を付けると、そのサーバーにだけ即時反映される
 ```
 

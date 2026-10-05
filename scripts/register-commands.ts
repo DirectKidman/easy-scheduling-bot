@@ -1,6 +1,7 @@
 // スラッシュコマンドを Discord に登録する（Worker のデプロイとは別に、コマンドを変えたら実行する）。
 //
-//   DISCORD_APPLICATION_ID=... DISCORD_BOT_TOKEN=... npm run register
+//   npm run register
+//   DISCORD_APPLICATION_ID と DISCORD_BOT_TOKEN は .env から読む（環境変数で渡せばそちらが優先）。
 //   DISCORD_GUILD_ID を付けると、そのサーバーにだけ即時登録する（開発用）。
 
 import { COMMANDS } from "../src/commands";

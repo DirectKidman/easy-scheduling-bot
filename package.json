@@ -8,7 +8,7 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "register": "tsx scripts/register-commands.ts",
+    "register": "tsx --env-file-if-exists=.env scripts/register-commands.ts",
     "db:migrate:local": "wrangler d1 migrations apply easy-scheduling-bot --local",
     "db:migrate:remote": "wrangler d1 migrations apply easy-scheduling-bot --remote"
   },
