@@ -9,7 +9,7 @@
       "binding": "DB",
       "database_name": "easy-scheduling-bot",
       // `wrangler d1 create easy-scheduling-bot` で出力された ID に置き換える
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "8adf6233-ba95-4b41-96ee-29a92bc16f97",
       "migrations_dir": "migrations"
     }
   ],
