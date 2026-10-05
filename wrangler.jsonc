@@ -8,8 +8,8 @@
     {
       "binding": "DB",
       "database_name": "easy-scheduling-bot",
-      // `wrangler d1 create easy-scheduling-bot` で出力された ID に置き換える
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      // `wrangler d1 create easy-scheduling-bot` で作った DB の ID
+      "database_id": "8adf6233-ba95-4b41-96ee-29a92bc16f97",
       "migrations_dir": "migrations"
     }
   ],
@@ -27,6 +27,21 @@
     "GUILD_GRACE_DAYS": "14",
     // 定期ジョブ 1 回あたりの Discord API 呼び出し数の上限（Workers のサブリクエスト上限より少なく）
     "SUBREQUEST_BUDGET": "40"
+  },
+  // main 以外のブランチのビルド（Workers Builds のプレビュー）用。本番の D1 は使わない
+  "previews": {
+    "vars": {
+      "RETENTION_DAYS": "30",
+      "GUILD_GRACE_DAYS": "14",
+      "SUBREQUEST_BUDGET": "40"
+    },
+    "d1_databases": [
+      {
+        "binding": "DB",
+        "database_name": "easy-scheduling-bot-preview",
+        "database_id": "eca33ccc-1212-4a64-b420-5f09b4e84d5c"
+      }
+    ]
   }
   // シークレット（リポジトリに入れない）:
   //   wrangler secret put DISCORD_PUBLIC_KEY

@@ -4,6 +4,7 @@ Discord の中だけでイベントの作成・参加確認・確認ができる
 Cloudflare Workers（HTTP インタラクション）+ D1 + Cron Triggers で動かす。TypeScript 製。
 
 - 要件定義: [docs/requirements.md](docs/requirements.md)
+- 構成と仕組み: [docs/architecture.md](docs/architecture.md)
 
 ## コマンド
 
@@ -72,7 +73,8 @@ Discord が署名付きの PING を送り、検証に通れば保存できる。
 ### 3. スラッシュコマンドを登録
 
 ```sh
-DISCORD_APPLICATION_ID=... DISCORD_BOT_TOKEN=... npm run register
+npm run register
+# .env の DISCORD_APPLICATION_ID・DISCORD_BOT_TOKEN を読む（環境変数で渡しても可。環境変数が優先）
 # 開発中は DISCORD_GUILD_ID=... を付けると、そのサーバーにだけ即時反映される
 ```
 
