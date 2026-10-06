@@ -254,11 +254,10 @@ async function saveVotes(
   const selected = values.map(Number).filter((id) => editableSet.has(id));
   await replaceVotes(ctx.env.DB, userId, value, selected, editable, ctx.now);
 
-  try {
-    await refreshPollMessage(ctx, poll);
-  } catch (err) {
-    logError("refresh poll message failed", err);
-  }
+  // 公開の投票メッセージの書き換えは、本人の回答パネルの更新を待たせないよう並行して進める
+  ctx.exec.waitUntil(
+    refreshPollMessage(ctx, poll).catch((err) => logError("refresh poll message failed", err)),
+  );
   return votePanel(ctx, poll, server, userId);
 }
 
