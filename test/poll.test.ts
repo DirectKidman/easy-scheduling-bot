@@ -216,7 +216,7 @@ describe("回答パネル（予定の参照）", () => {
     await seedVote(candidateIds[1]!, "u1", "yes");
     await interact(select(`poll:yes:${pollId}`, [String(candidateIds[1])]));
     const names = discord.messages.get(messageId)!.embeds[0]!.fields!.map((f) => f.name);
-    expect(names).toEqual(["①　⭕ 0　🔺 0", "⭐ ②　⭕ 2　🔺 0"]);
+    expect(names).toEqual(["①　⭕ 0　🔺 0", "②　⭕ 2　🔺 0　⭐"]);
   });
 
   it("開始済みの候補は選択肢に出さず、送られてきても変更しない", async () => {
@@ -394,7 +394,7 @@ describe("/my・/forget・削除ジョブとの連携", () => {
     await interact(button("forget:allok"));
     expect(await votesOf(MEMBER_ID)).toEqual([]);
     expect(await votesOf("u2")).toHaveLength(1);
-    expect(discord.messages.get(messageId)!.embeds[0]!.fields![0]!.name).toBe("⭐ ①　⭕ 1　🔺 0");
+    expect(discord.messages.get(messageId)!.embeds[0]!.fields![0]!.name).toBe("①　⭕ 1　🔺 0　⭐");
   });
 
   it("最後の候補日から保持期間を過ぎた日程調整を削除する", async () => {
