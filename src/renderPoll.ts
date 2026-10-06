@@ -86,14 +86,15 @@ export function buildPollMessage(
 
   const fields: APIEmbedField[] = candidates.map((c) => {
     const t = tally.get(c.id)!;
-    const star = bestYes > 0 && t.yes.length === bestYes ? "⭐ " : "";
+    // 先頭に付けると候補番号の位置がずれるので、行末に付ける
+    const star = bestYes > 0 && t.yes.length === bestYes ? "　⭐" : "";
     const ended = c.start_at <= now ? "（終了）" : "";
     let value = candidateRange(c, poll);
     if (mentionLimit > 0) {
       if (t.yes.length) value += `\n⭕ ${mentionList(t.yes, mentionLimit)}`;
       if (t.maybe.length) value += `\n🔺 ${mentionList(t.maybe, mentionLimit)}`;
     }
-    return { name: `${star}${candidateLabel(c)}　⭕ ${t.yes.length}　🔺 ${t.maybe.length}${ended}`, value };
+    return { name: `${candidateLabel(c)}　⭕ ${t.yes.length}　🔺 ${t.maybe.length}${ended}${star}`, value };
   });
 
   const voters = new Set(votes.map((v) => v.user_id)).size;
@@ -203,11 +204,12 @@ export function buildVotePanel(opts: {
   return {
     content:
       open.length > 0
-        ? "行ける日を ⭕、たぶん行ける日を 🔺 で選んでください（複数可。選ばなかった日は ❌）。選ぶとすぐ保存されます。"
+        ? "行ける日を ⭕、たぶん行ける日を 🔺 のメニューで選んでください（複数可。選ばなかった日は ❌）。\n" +
+          "**日付を選んだら、メニューを閉じる（スマホは「選択」を押す）と回答が確定します。**確定すると下の「あなた:」に反映されます。"
         : "回答を受け付けている候補日はありません。",
     embeds: [embed],
     components:
-      open.length > 0 ? [select("yes", "⭕ 行ける日を選ぶ（複数可）"), select("maybe", "🔺 たぶん行ける日を選ぶ（複数可）")] : [],
+      open.length > 0 ? [select("yes", "⭕ 行ける日を選んで確定（複数可）"), select("maybe", "🔺 たぶん行ける日を選んで確定（複数可）")] : [],
     allowed_mentions: { parse: [] },
   };
 }
