@@ -127,7 +127,7 @@ export function buildPollMessage(
                 style: ButtonStyle.Secondary,
                 custom_id: `poll:detail:${poll.id}`,
                 label: "詳細",
-                emoji: { name: "⋯" },
+                emoji: { name: "📋" },
               },
             ],
           },
