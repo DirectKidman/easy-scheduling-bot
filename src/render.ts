@@ -109,7 +109,7 @@ export function buildAnnouncementComponents(
           style: ButtonStyle.Secondary,
           custom_id: `detail:${event.id}`,
           label: "詳細",
-          emoji: { name: "⋯" },
+          emoji: { name: "📋" },
         },
       ],
     },
