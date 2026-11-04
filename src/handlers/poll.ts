@@ -34,9 +34,10 @@ import {
 } from "../db/queries";
 import { isOperator } from "../discord/permissions";
 import { DiscordErrorCode, discordRequest, isDiscordError } from "../discord/rest";
-import { defer, ephemeral, ephemeralMessage, logError, type Context, type MessageBody } from "../interaction";
+import { defer, editOriginal, ephemeral, ephemeralMessage, logError, type Context, type MessageBody } from "../interaction";
 import { buildAnnouncement, messageLink } from "../render";
 import {
+  applyVoteToPanel,
   buildConfirmedPollMessage,
   buildPollDetail,
   buildPollHeader,
@@ -177,6 +178,19 @@ export async function handlePollComponent(
       if (poll.state !== "open") return ephemeral("この日程調整は受付を終了しています。");
       const [candText, value, pageText] = args;
       if (!VOTE_VALUES.includes(value as VoteValue)) return ephemeral("不明な操作です。");
+      // 押されたパネルをその場で書き換えてすぐ返し、保存と投票メッセージの描き直しは応答の後に行う
+      const instant = applyVoteToPanel(interaction.message, interaction.data.custom_id);
+      if (instant) {
+        ctx.exec.waitUntil(
+          persistVote(ctx, poll, server, userId, Number(candText), instant.value, Number(pageText) || 0, interaction.token).catch(
+            (err) => logError("persist vote failed", err),
+          ),
+        );
+        return {
+          type: InteractionResponseType.UpdateMessage,
+          data: { ...instant.body, allowed_mentions: { parse: [] } },
+        };
+      }
       return defer(ctx, interaction.token, "update", () =>
         saveVote(ctx, poll, server, userId, Number(candText), value as VoteValue, Number(pageText) || 0),
       );
@@ -300,6 +314,30 @@ async function saveVote(
     );
   }
   return votePanel(ctx, poll, server, userId, page);
+}
+
+/**
+ * すぐ返したパネルの回答を保存する。受け付けられなければ（開始済みの候補など）、パネルを DB の状態に戻す。
+ * value は押した後の回答（null は取り消し）。トグルの判定はパネル側で済ませている。
+ */
+async function persistVote(
+  ctx: Context,
+  poll: PollRow,
+  server: ServerRow,
+  userId: string,
+  candidateId: number,
+  value: VoteValue | null,
+  page: number,
+  token: string,
+): Promise<void> {
+  const candidates = await listCandidates(ctx.env.DB, poll.id);
+  const candidate = candidates.find((c) => c.id === candidateId);
+  if (!candidate || candidate.start_at <= ctx.now) {
+    await editOriginal(ctx.env, token, await votePanel(ctx, poll, server, userId, page));
+    return;
+  }
+  await setVote(ctx.env.DB, candidateId, userId, value, ctx.now);
+  await refreshPollMessage(ctx, poll);
 }
 
 async function pollDetail(

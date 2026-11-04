@@ -318,6 +318,77 @@ describe("回答パネル（日付ごとの ⭕🔺❌ ボタンと、予定の�
     expect(rows[1]!.components.slice(1).every((c) => c.style === ButtonStyle.Secondary)).toBe(true);
   });
 
+  it("押されたパネルをその場で書き換えてすぐ返し、保存と投票メッセージの描き直しは後から行う", async () => {
+    await seedServer();
+    const base = nowSec() + 10 * DAY;
+    const messageId = seedMessage(discord);
+    const { pollId, candidateIds } = await seedPoll({ starts: [base, base + DAY], messageId });
+    const [c1, c2] = candidateIds as [number, number];
+    await seedVote(c2, MEMBER_ID, "maybe");
+    await interact(button(`poll:vote:${pollId}`));
+    let panel = discord.followups()[0];
+    const before = discord.calls.length;
+
+    const res = await interact(button(`poll:v:${pollId}:${c1}:yes:0`, panel));
+    expect(res.type).toBe(InteractionResponseType.UpdateMessage);
+    const rows = voteRows(res.data);
+    expect(rows[0]!.components.slice(1).map((c) => c.style)).toEqual([
+      ButtonStyle.Success,
+      ButtonStyle.Secondary,
+      ButtonStyle.Secondary,
+    ]);
+    expect(rows[1]!.components.slice(1).map((c) => c.style)).toEqual([
+      ButtonStyle.Secondary,
+      ButtonStyle.Primary,
+      ButtonStyle.Secondary,
+    ]);
+    const lines = res.data.embeds[0].description.split("\n");
+    expect(lines[0]).toMatch(/あなた: ⭕$/);
+    expect(lines[1]).toMatch(/あなた: 🔺$/);
+    // 回答パネル自体の書き換え（webhook の編集）はせず、保存と投票メッセージの描き直しだけを後から行う
+    expect(discord.calls.slice(before).filter((c) => c.path.includes("/webhooks/"))).toEqual([]);
+    expect(await votesOf(MEMBER_ID)).toEqual([
+      { candidate_id: c1, value: "yes" },
+      { candidate_id: c2, value: "maybe" },
+    ]);
+    expect(discord.messages.get(messageId)!.embeds[0]!.fields![0]!.value).toContain("⭕ 1　<@");
+
+    // 同じボタンをもう一度押すと取り消し
+    panel = { ...panel, ...res.data };
+    const again = await interact(button(`poll:v:${pollId}:${c1}:yes:0`, panel));
+    expect(voteRows(again.data)[0]!.components.slice(1).every((c) => c.style === ButtonStyle.Secondary)).toBe(true);
+    expect(again.data.embeds[0].description.split("\n")[0]).toMatch(/あなた: ➖$/);
+    expect(await votesOf(MEMBER_ID)).toEqual([{ candidate_id: c2, value: "maybe" }]);
+  });
+
+  it("ページが分かれていても、押した行の候補日を書き換える", async () => {
+    await seedServer();
+    const base = nowSec() + 10 * DAY;
+    const starts = Array.from({ length: 6 }, (_, i) => base + i * DAY);
+    const { pollId, candidateIds } = await seedPoll({ starts });
+    await interact(button(`poll:page:${pollId}:1`));
+    const panel = discord.followups()[0];
+    const res = await interact(button(`poll:v:${pollId}:${candidateIds[5]}:no:1`, panel));
+    const lines = res.data.embeds[0].description.split("\n");
+    expect(lines[5]).toMatch(/あなた: ❌$/);
+    expect(lines.slice(0, 5).every((l: string) => l.endsWith("あなた: ➖"))).toBe(true);
+    expect(await votesOf(MEMBER_ID)).toEqual([{ candidate_id: candidateIds[5], value: "no" }]);
+  });
+
+  it("すぐ返した後で受け付けられなかった回答（開始済みの候補）は、パネルを元に戻す", async () => {
+    await seedServer();
+    const base = nowSec() + 10 * DAY;
+    const { pollId, candidateIds } = await seedPoll({ starts: [base, base + DAY] });
+    await interact(button(`poll:vote:${pollId}`));
+    const panel = discord.followups()[0];
+    await env.DB.prepare("UPDATE poll_candidates SET start_at = ?1 WHERE id = ?2").bind(nowSec() - HOUR, candidateIds[0]).run();
+    const res = await interact(button(`poll:v:${pollId}:${candidateIds[0]}:yes:0`, panel));
+    expect(res.type).toBe(InteractionResponseType.UpdateMessage);
+    expect(await votesOf(MEMBER_ID)).toEqual([]);
+    const restored = discord.followups().at(-1);
+    expect(restored.embeds[0].description.split("\n")[0]).toMatch(/あなた: ➖（終了）$/);
+  });
+
   it("⭕・🔺・❌ の色はそれぞれ緑・青・赤", async () => {
     await seedServer();
     const base = nowSec() + 10 * DAY;
