@@ -102,8 +102,15 @@ describe("/poll の作成", () => {
     const embed = posted!.body.embeds[0];
     expect(embed.title).toBe("🗳️ ボドゲ会（日程調整）");
     expect(embed.description).toContain("所要時間　3時間");
-    expect(embed.fields).toEqual([{ name: "回答状況", value: expect.stringContaining("まだ回答はありません") }]);
-    expect(embed.footer.text).toContain("〇 参加できる　△ たぶん　× 参加できない　－ 未回答");
+    expect(embed.fields).toHaveLength(1);
+    expect(embed.fields[0].name).toBe("候補日");
+    expect(embed.fields[0].value.split("\n").slice(0, 3)).toEqual([
+      `・${formatRange(jst("10-11", "19:00"), 180, TOKYO, nowSec())}`,
+      `・${formatRange(jst("10-12", "14:00"), 180, TOKYO, nowSec())}`,
+      `・${formatRange(jst("10-18", "19:00"), 180, TOKYO, nowSec())}`,
+    ]);
+    expect(embed.fields[0].value).toContain("まだ回答はありません");
+    expect(embed.footer.text).toContain("⭕ 参加できる　🔺 たぶん　❌ 参加できない　➖ 未回答");
     expect(JSON.stringify(posted!.body)).not.toContain("<t:");
     expect(posted!.body.components[0].components.map((c: { custom_id: string }) => c.custom_id)).toEqual([
       `poll:vote:${poll!.id}`,
@@ -143,8 +150,8 @@ describe("/poll の作成", () => {
   });
 });
 
-describe("投票メッセージの表", () => {
-  it("縦が日付・横がメンバーの表で 〇△× を出し、未回答は － にする", async () => {
+describe("投票メッセージの回答状況（日付ごとの一覧）", () => {
+  it("候補日ごとに、記号ごとの人数と名前を 1 行ずつ出す。⭕ が最多の日に ⭐", async () => {
     await seedServer();
     const c1Start = jst("11-12", "19:00");
     const c2Start = jst("11-13", "19:00");
@@ -159,58 +166,64 @@ describe("投票メッセージの表", () => {
 
     const embed = discord.messages.get(messageId)!.embeds[0]!;
     expect(embed.description).toBe("所要時間　2時間\n主催　<@1>");
-    const [table, members, best] = embed.fields!;
-    expect(table!.name).toBe("回答状況");
-    expect(table!.value).toBe(
-      [
-        "```",
-        `${" ".repeat(14)} ＡＢＣ`,
-        `11/12(${wd(c1Start)})19:00 〇△－`,
-        `11/13(${wd(c2Start)})19:00 ×－〇`,
-        "```",
-      ].join("\n"),
-    );
-    expect(members).toEqual({ name: "メンバー", value: "Ａ <@u1>　Ｂ <@u2>　Ｃ <@u3>" });
-    expect(best!.name).toBe("⭐ 〇が多い日");
-    expect(best!.value.split("\n")).toHaveLength(2);
-    expect(embed.footer!.text).toContain("回答 3人");
-  });
-
-  it("列は最初に回答した順に固定され、回答を変えても動かない", async () => {
-    await seedServer();
-    const messageId = seedMessage(discord);
-    const base = nowSec() + 10 * DAY;
-    const { pollId, candidateIds } = await seedPoll({ starts: [base, base + DAY], messageId });
-    await seedVote(candidateIds[0]!, "u1", "yes");
-    await seedVote(candidateIds[0]!, "u2", "yes");
-    await interact(button(`poll:v:${pollId}:${candidateIds[0]}:no:0`, {}, { userId: "u1" }));
-    const members = discord.messages.get(messageId)!.embeds[0]!.fields!.find((f) => f.name === "メンバー");
-    expect(members!.value).toBe("Ａ <@u1>　Ｂ <@u2>");
-  });
-
-  it("スマホで折り返さないよう、6 人ごとに表を分ける。19 人目以降は詳細で見る", async () => {
-    await seedServer();
-    const messageId = seedMessage(discord);
-    const base = nowSec() + 10 * DAY;
-    const { pollId, candidateIds } = await seedPoll({ starts: [base, base + DAY], messageId });
-    for (let i = 1; i <= 19; i++) await seedVote(candidateIds[0]!, `u${i}`, "yes");
-    await interact(button(`poll:v:${pollId}:${candidateIds[1]}:yes:0`, {}, { userId: "u1" }));
-
-    const fields = discord.messages.get(messageId)!.embeds[0]!.fields!;
-    expect(fields.map((f) => f.name)).toEqual([
-      "回答状況（Ａ〜Ｆ）",
-      "回答状況（Ｇ〜Ｌ）",
-      "回答状況（Ｍ〜Ｒ）",
-      "メンバー",
-      "⭐ 〇が多い日",
+    expect(embed.fields).toEqual([
+      {
+        name: `${formatRange(c1Start, 120, TOKYO, nowSec())} ⭐`,
+        value: ["⭕ 1　<@u1>", "🔺 1　<@u2>", "➖ 1　<@u3>"].join("\n"),
+      },
+      {
+        name: `${formatRange(c2Start, 120, TOKYO, nowSec())} ⭐`,
+        value: ["⭕ 1　<@u3>", "🔺 0", "❌ 1　<@u1>", "➖ 1　<@u2>"].join("\n"),
+      },
     ]);
-    expect(fields[0]!.value.split("\n")[1]).toBe(`${" ".repeat(14)} ＡＢＣＤＥＦ`);
-    expect(fields[3]!.value).toContain("他 1 人の回答は [📋 詳細] で確認できます");
+    expect(embed.footer!.text).toContain("回答 3人");
+    expect(embed.footer!.text).not.toContain("[📋 詳細]");
+  });
+
+  /** 20 候補すべてに n 人が回答した日程調整（3 人に 1 人は ❌、ほかは ⭕。1 人目の 1 候補目だけ 🔺） */
+  async function seedCrowdedPoll(n: number) {
+    await seedServer();
+    const messageId = seedMessage(discord);
+    const base = nowSec() + 10 * DAY;
+    const starts = Array.from({ length: 20 }, (_, i) => base + i * DAY);
+    const { pollId, candidateIds } = await seedPoll({ starts, messageId });
+    const users = Array.from({ length: n }, (_, i) => `3000000000000000${String(i).padStart(2, "0")}`);
+    const insert = env.DB.prepare(
+      "INSERT INTO poll_votes (candidate_id, user_id, value, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+    );
+    await env.DB.batch(
+      candidateIds.flatMap((c) => users.map((u, i) => insert.bind(c, u, i % 3 === 0 ? "no" : "yes", i + 1))),
+    );
+    await interact(button(`poll:v:${pollId}:${candidateIds[0]}:maybe:0`, {}, { userId: users[1] }));
+    const embed = discord.messages.get(messageId)!.embeds[0]!;
+    const size =
+      embed.title!.length +
+      embed.description!.length +
+      embed.footer!.text.length +
+      embed.fields!.reduce((n, f) => n + f.name.length + f.value.length, 0);
+    expect(size).toBeLessThanOrEqual(6000);
+    expect(embed.fields).toHaveLength(20);
+    return embed;
+  }
+
+  it("名前が埋め込みの上限に収まらなければ、❌ の名前を省く", async () => {
+    const embed = await seedCrowdedPoll(15);
+    const lines = embed.fields![0]!.value.split("\n");
+    expect(lines[0]).toMatch(/^⭕ 9　<@\d+>( <@\d+>){8}$/);
+    expect(lines[1]).toMatch(/^🔺 1　<@\d+>$/);
+    expect(lines[2]).toBe("❌ 5");
+    expect(embed.footer!.text).toContain("名前は [📋 詳細] で確認できます");
+  });
+
+  it("それでも収まらなければ人数だけにする", async () => {
+    const embed = await seedCrowdedPoll(25);
+    expect(embed.fields![0]!.value.split("\n")).toEqual(["⭕ 15", "🔺 1", "❌ 9"]);
+    expect(embed.footer!.text).toContain("名前は [📋 詳細] で確認できます");
   });
 });
 
-describe("回答パネル（日付ごとの 〇△× ボタンと、予定の参照）", () => {
-  it("候補日ごとに [日付][〇][△][×] を並べ、他サーバーの予定や別の日程調整との重なりを本人にだけ表示する", async () => {
+describe("回答パネル（日付ごとの ⭕🔺❌ ボタンと、予定の参照）", () => {
+  it("候補日ごとに [日付][⭕][🔺][❌] を並べ、他サーバーの予定や別の日程調整との重なりを本人にだけ表示する", async () => {
     await seedServer();
     await seedServer({ guild_id: OTHER_GUILD });
     discord.guilds.set(OTHER_GUILD, "サーバーB");
@@ -220,10 +233,10 @@ describe("回答パネル（日付ごとの 〇△× ボタンと、予定の参
     // 1 つ目の候補と重なる、別サーバーの確定イベント（参加）
     const busyEvent = await seedEvent({ startAt: base + HOUR, title: "読書会", guildId: OTHER_GUILD, messageId: "77" });
     await env.DB.prepare("INSERT INTO responses VALUES (?1, ?2, 'going', 1)").bind(busyEvent, MEMBER_ID).run();
-    // 3 つ目の候補と重なる、別の日程調整の候補（〇）
+    // 3 つ目の候補と重なる、別の日程調整の候補（⭕）
     const other = await seedPoll({ starts: [base + 2 * DAY - HOUR], title: "カラオケ", guildId: OTHER_GUILD });
     await seedVote(other.candidateIds[0]!, MEMBER_ID, "yes");
-    // 別の日程調整で × を付けた候補は「予定」ではないので重なりに出さない
+    // 別の日程調整で ❌ を付けた候補は「予定」ではないので重なりに出さない
     const declined = await seedPoll({ starts: [base + DAY], title: "行けない会", guildId: OTHER_GUILD });
     await seedVote(declined.candidateIds[0]!, MEMBER_ID, "no");
     // 自分の今の回答
@@ -236,12 +249,12 @@ describe("回答パネル（日付ごとの 〇△× ボタンと、予定の参
     const panel = discord.followups()[0];
     expect(JSON.stringify(panel)).not.toContain("<t:");
     const lines: string[] = panel.embeds[0].description.split("\n");
-    expect(lines[0]).toMatch(/あなた: －$/);
+    expect(lines[0]).toMatch(/あなた: ➖$/);
     expect(lines[1]).toContain("⚠️ **サーバーB**");
     expect(lines[1]).toContain("[読書会](https://discord.com/channels/");
     expect(lines[1]).toMatch(/✅$/);
-    expect(lines[2]).toMatch(/あなた: △$/);
-    expect(lines[3]).toMatch(/あなた: －$/);
+    expect(lines[2]).toMatch(/あなた: 🔺$/);
+    expect(lines[3]).toMatch(/あなた: ➖$/);
     expect(lines[4]).toContain("カラオケ");
     expect(lines[4]).toContain("（日程調整中）");
     expect(lines.join("\n")).not.toContain("行けない会");
@@ -250,12 +263,12 @@ describe("回答パネル（日付ごとの 〇△× ボタンと、予定の参
     const rows = voteRows(panel);
     expect(rows).toHaveLength(3);
     expect(rows.map((r) => r.components.map((c) => c.label))).toEqual([
-      [expect.stringMatching(/ ⚠️$/), "〇", "△", "×"],
-      [expect.not.stringContaining("⚠️"), "〇", "△", "×"],
-      [expect.stringMatching(/ ⚠️$/), "〇", "△", "×"],
+      [expect.stringMatching(/ ⚠️$/), "⭕", "🔺", "❌"],
+      [expect.not.stringContaining("⚠️"), "⭕", "🔺", "❌"],
+      [expect.stringMatching(/ ⚠️$/), "⭕", "🔺", "❌"],
     ]);
     expect(rows[0]!.components[0]!.disabled).toBe(true);
-    // 今の回答（2 つ目の候補の △）だけ色が付く
+    // 今の回答（2 つ目の候補の 🔺）だけ色が付く
     expect(rows[1]!.components.slice(1).map((c) => c.style)).toEqual([
       ButtonStyle.Secondary,
       ButtonStyle.Primary,
@@ -272,7 +285,7 @@ describe("回答パネル（日付ごとの 〇△× ボタンと、予定の参
     expect(discord.followups()[0].embeds[0].footer.text).toContain("重なっていません");
   });
 
-  it("押すとすぐ保存し、別の記号で上書き、同じ記号をもう一度押すと取り消し（－）にする", async () => {
+  it("押すとすぐ保存し、別の記号で上書き、同じ記号をもう一度押すと取り消し（➖）にする", async () => {
     await seedServer();
     const base = nowSec() + 10 * DAY;
     const { pollId, candidateIds } = await seedPoll({ starts: [base, base + DAY], messageId: seedMessage(discord) });
@@ -305,7 +318,7 @@ describe("回答パネル（日付ごとの 〇△× ボタンと、予定の参
     expect(rows[1]!.components.slice(1).every((c) => c.style === ButtonStyle.Secondary)).toBe(true);
   });
 
-  it("〇・△・× の色はそれぞれ緑・青・赤", async () => {
+  it("⭕・🔺・❌ の色はそれぞれ緑・青・赤", async () => {
     await seedServer();
     const base = nowSec() + 10 * DAY;
     const { pollId, candidateIds } = await seedPoll({ starts: [base, base + DAY, base + 2 * DAY] });
@@ -314,7 +327,7 @@ describe("回答パネル（日付ごとの 〇△× ボタンと、予定の参
     await seedVote(candidateIds[2]!, MEMBER_ID, "no");
     await interact(button(`poll:vote:${pollId}`));
     const rows = voteRows(discord.followups()[0]);
-    expect(rows.map((r) => r.components.find((c) => c.style !== ButtonStyle.Secondary)!.label)).toEqual(["〇", "△", "×"]);
+    expect(rows.map((r) => r.components.find((c) => c.style !== ButtonStyle.Secondary)!.label)).toEqual(["⭕", "🔺", "❌"]);
     expect(rows.map((r) => r.components.find((c) => c.style !== ButtonStyle.Secondary)!.style)).toEqual([
       ButtonStyle.Success,
       ButtonStyle.Primary,
@@ -409,31 +422,32 @@ describe("確定・中止", () => {
     const { pollId } = await seedOpenPoll();
     const asMember = await interact(button(`poll:detail:${pollId}`));
     expect(asMember.data.flags).toBe(MessageFlags.Ephemeral);
-    expect(asMember.data.embeds[0].description).toContain("〇 参加できる (1) <@u1>");
-    expect(asMember.data.embeds[0].description).toContain("× 参加できない (1) <@u4>");
+    expect(asMember.data.embeds[0].description).toContain("⭕ 参加できる (1) <@u1>");
+    expect(asMember.data.embeds[0].description).toContain("❌ 参加できない (1) <@u4>");
     expect(asMember.data.components).toEqual([]);
 
     const asAdmin = await interact(button(`poll:detail:${pollId}`, {}, admin));
     expect(asAdmin.data.components[0].components[0].custom_id).toBe(`poll:pick:${pollId}`);
-    expect(asAdmin.data.components[0].components[0].options[1].label).toMatch(/　〇1 △1 ×1$/);
+    expect(asAdmin.data.components[0].components[0].options[1].label).toMatch(/　⭕1 🔺1 ❌1$/);
     expect(asAdmin.data.components[1].components[0].custom_id).toBe(`poll:cancel:${pollId}`);
   });
 
   it("運営者以外は確定できない（ボタンが見えるかに関係なく確認する）", async () => {
     const { pollId, c2 } = await seedOpenPoll();
-    const res = await interact(button(`poll:confirm:${pollId}:${c2}`));
+    const res = await interact(button(`poll:fix:${pollId}:2`));
     expect(res.data.content).toContain("運営者");
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM events").first("n")).toBe(0);
   });
 
-  it("確定すると、〇→参加・△→未定・×→不参加で引き継いだイベントになり、投票メッセージが告知に切り替わる", async () => {
+  it("確定すると、⭕→参加・🔺→未定・❌→不参加で引き継いだイベントになり、投票メッセージが告知に切り替わる", async () => {
     const { pollId, c2, base, messageId } = await seedOpenPoll();
 
     const confirm = await interact(select(`poll:pick:${pollId}`, [String(c2)], {}, admin));
     expect(confirm.type).toBe(InteractionResponseType.UpdateMessage);
-    expect(confirm.data.content).toContain("〇 の 1 人は「参加」、△ の 1 人は「未定」、× の 1 人は「不参加」");
+    expect(confirm.data.content).toContain("⭕ の 1 人は「参加」、🔺 の 1 人は「未定」、❌ の 1 人は「不参加」");
 
-    const res = await interact(button(`poll:confirm:${pollId}:${c2}`, {}, admin));
+    expect(confirm.data.components[0].components[0].custom_id).toBe(`poll:fix:${pollId}:2`);
+    const res = await interact(button(`poll:fix:${pollId}:2`, {}, admin));
     expect(res.type).toBe(InteractionResponseType.DeferredMessageUpdate);
 
     const event = await env.DB.prepare("SELECT * FROM events").first<Record<string, unknown>>();
@@ -468,8 +482,89 @@ describe("確定・中止", () => {
     expect(discord.followups()[0].content).toContain("確定しました");
 
     // 二重に確定しても、イベントは 1 つだけ
-    await interact(button(`poll:confirm:${pollId}:${c2}`, {}, admin));
+    await interact(button(`poll:fix:${pollId}:2`, {}, admin));
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM events").first("n")).toBe(1);
+  });
+
+  it("複数の日程をまとめて確定すると、日程ごとに告知を投稿し、投票メッセージは確定した日程の一覧になる", async () => {
+    const { pollId, c1, c2, base, messageId } = await seedOpenPoll();
+
+    const detail = await interact(button(`poll:detail:${pollId}`, {}, admin));
+    expect(detail.data.components[0].components[0]).toMatchObject({ min_values: 1, max_values: 2 });
+
+    const confirm = await interact(select(`poll:pick:${pollId}`, [String(c2), String(c1)], {}, admin));
+    expect(confirm.data.content).toContain("次の 2 日程で確定しますか");
+    expect(confirm.data.content).toContain("⭕1 🔺1 ❌1");
+    const fix = confirm.data.components[0].components[0];
+    expect(fix).toMatchObject({ custom_id: `poll:fix:${pollId}:1.2`, label: "2 日程で確定する" });
+    await interact(button(fix.custom_id, {}, admin));
+
+    const events = (
+      await env.DB.prepare("SELECT id, start_at, message_id, state FROM events ORDER BY start_at").all<{
+        id: number;
+        start_at: number;
+        message_id: string;
+        state: string;
+      }>()
+    ).results;
+    expect(events.map((e) => e.start_at)).toEqual([base, base + DAY]);
+    expect(events.every((e) => e.state === "scheduled" && e.message_id !== messageId)).toBe(true);
+    const responses = (
+      await env.DB.prepare("SELECT event_id, user_id, status FROM responses ORDER BY event_id, user_id").all()
+    ).results;
+    expect(responses).toEqual([
+      { event_id: events[0]!.id, user_id: "u3", status: "going" },
+      { event_id: events[1]!.id, user_id: "u1", status: "going" },
+      { event_id: events[1]!.id, user_id: "u2", status: "maybe" },
+      { event_id: events[1]!.id, user_id: "u4", status: "declined" },
+    ]);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM polls").first("n")).toBe(0);
+
+    // 日程ごとの告知（回答ボタン付き）
+    for (const e of events) {
+      const msg = discord.messages.get(e.message_id)!;
+      expect(msg.channel_id).toBe(CHANNEL_ID);
+      expect(msg.embeds[0]!.title).toBe("📅 ボドゲ会");
+      expect(msg.embeds[0]!.description).toBe(
+        `日時　${formatRange(e.start_at, 180, TOKYO, nowSec())}\n場所　#voice-1\n主催　<@1>\n\n説明文`,
+      );
+      expect((msg.components[0] as { components: { custom_id: string }[] }).components[0]!.custom_id).toBe(
+        `rsvp:${e.id}:going`,
+      );
+    }
+    expect(discord.messages.get(events[1]!.message_id)!.embeds[0]!.fields![0]).toEqual({ name: "✅ 参加 (1)", value: "<@u1>" });
+
+    // 投票メッセージは確定した日程の一覧（各告知へのリンク）
+    const pollMsg = discord.messages.get(messageId)!;
+    expect(pollMsg.embeds[0]!.title).toBe("✅ ボドゲ会（日程確定）");
+    expect(pollMsg.embeds[0]!.description).toContain(
+      `[${formatRange(base, 180, TOKYO, nowSec())}](https://discord.com/channels/`,
+    );
+    expect(pollMsg.embeds[0]!.description).toContain(events[1]!.message_id);
+    expect(pollMsg.embeds[0]!.description).toContain("場所　#voice-1");
+    expect(pollMsg.embeds[0]!.description).not.toContain("所要時間");
+    expect(pollMsg.components).toEqual([]);
+    expect(discord.followups().at(-1).content).toContain("2 日程で確定し");
+  });
+
+  it("告知を投稿できなければ、投稿済みの告知を消して日程調整を残す", async () => {
+    const { pollId, messageId } = await seedOpenPoll();
+    const posted = discord.messages.size;
+    const before = structuredClone(discord.messages.get(messageId));
+    discord.forbiddenChannels.add(CHANNEL_ID);
+    await interact(button(`poll:fix:${pollId}:1.2`, {}, admin));
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM events").first("n")).toBe(0);
+    expect(await env.DB.prepare("SELECT state FROM polls").first("state")).toBe("open");
+    expect(discord.messages.size).toBe(posted);
+    expect(discord.messages.get(messageId)).toEqual(before);
+    expect(discord.followups().at(-1).content).toContain("日程調整は確定せずに残しています");
+  });
+
+  it("以前の確定ボタン（候補 ID 付き）は開き直すよう案内する", async () => {
+    const { pollId, c2 } = await seedOpenPoll();
+    const res = await interact(button(`poll:confirm:${pollId}:${c2}`, {}, admin));
+    expect(res.data.content).toContain("開き直してください");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM events").first("n")).toBe(0);
   });
 
   it("中止すると回答ボタンが消え、【中止】になる", async () => {
@@ -521,7 +616,7 @@ describe("確定イベントの回答時の重なり警告", () => {
 });
 
 describe("/my・/forget・削除ジョブとの連携", () => {
-  it("/my に回答中の日程調整を 〇△× で出す", async () => {
+  it("/my に回答中の日程調整を ⭕🔺❌ で出す", async () => {
     await seedServer();
     const base = nowSec() + 10 * DAY;
     const { candidateIds } = await seedPoll({ starts: [base, base + DAY], messageId: "66" });
@@ -531,8 +626,8 @@ describe("/my・/forget・削除ジョブとの連携", () => {
     const [embed] = discord.followups()[0].embeds;
     expect(embed.title).toBe("🗳️ 回答中の日程調整");
     expect(embed.description).toContain("[ボドゲ会](https://discord.com/channels/");
-    expect(embed.description).toContain("〇、");
-    expect(embed.description).toMatch(/×$/);
+    expect(embed.description).toContain("⭕、");
+    expect(embed.description).toMatch(/❌$/);
     expect(embed.description).not.toContain("<t:");
   });
 
@@ -550,8 +645,7 @@ describe("/my・/forget・削除ジョブとの連携", () => {
     await interact(button("forget:allok"));
     expect(await votesOf(MEMBER_ID)).toEqual([]);
     expect(await votesOf("u2")).toHaveLength(1);
-    const members = discord.messages.get(messageId)!.embeds[0]!.fields!.find((f) => f.name === "メンバー");
-    expect(members!.value).toBe("Ａ <@u2>");
+    expect(discord.messages.get(messageId)!.embeds[0]!.fields![0]!.value.split("\n")[0]).toBe("⭕ 1　<@u2>");
   });
 
   it("最後の候補日から保持期間を過ぎた日程調整を削除する", async () => {

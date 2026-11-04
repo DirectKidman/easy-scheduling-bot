@@ -198,13 +198,6 @@ export function timezoneNote(tz: string): string {
   return tz === "Asia/Tokyo" ? "" : `（${tz}）`;
 }
 
-/** 表の日付列: 幅をそろえた「11/12(水)19:00」（1 桁の月日は前を空白で埋める） */
-export function formatTableDate(unix: number, tz: string): string {
-  const p = toLocalParts(unix * 1000, tz);
-  const md = `${String(p.month).padStart(2, " ")}/${String(p.day).padStart(2, " ")}`;
-  return `${md}(${weekday(p)})${pad2(p.hour)}:${pad2(p.minute)}`;
-}
-
 export const MAX_CANDIDATES = 20;
 
 /** 候補日の一覧（1 行 1 候補）を解釈する。重複は除き、日時順に並べる */

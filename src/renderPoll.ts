@@ -10,7 +10,7 @@ import {
 import { formatBusyLine, NO_VOTE_MARK, VOTE_MARK, type Busy } from "./conflicts";
 import type { CandidateRow, PollRow, VoteRow, VoteValue } from "./db/polls";
 import { mention } from "./render";
-import { formatDateTime, formatRange, formatTableDate } from "./time";
+import { formatDateTime, formatRange } from "./time";
 
 const COLOR_OPEN = 0x57f287;
 const COLOR_CANCELLED = 0x80848e;
@@ -66,72 +66,81 @@ export function tallyVotes(candidates: CandidateRow[], votes: VoteRow[]): Map<nu
 }
 
 export function tallyText(t: Tally): string {
-  return `〇${t.yes.length} △${t.maybe.length} ×${t.no.length}`;
+  return VOTE_VALUES.map((v) => `${VOTE_MARK[v]}${t[v].length}`).join(" ");
 }
 
-// ---- 公開の投票メッセージ（表） ----
+// ---- 公開の投票メッセージ（日付ごとの一覧） ----
 
-/** 表の列見出し。全角にして、〇△×－ と幅をそろえる */
-const MEMBER_LETTERS = "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲ";
-/** 1 つの表に並べる人数（スマホの画面幅で折り返さないように） */
-export const MEMBERS_PER_TABLE = 6;
-/** 表に載せる最大人数（埋め込みの文字数上限のため。超えた分は「詳細」で見る） */
-export const MAX_TABLE_MEMBERS = MEMBER_LETTERS.length;
-/** 日付列「11/12(水)19:00」の表示幅（半角換算） */
-const DATE_COLUMN_WIDTH = 14;
+/** 埋め込み全体の文字数上限（6000）に、タイトルや本文のぶんの余裕を見た値 */
+const EMBED_TEXT_LIMIT = 5800;
+/** 埋め込みのフィールド値の上限 */
+const FIELD_VALUE_LIMIT = 1024;
 
-/** 回答した人を、最初に回答した順に並べる（回答を変えても列は動かない） */
-export function orderVoters(votes: VoteRow[]): string[] {
-  const first = new Map<string, number>();
-  for (const v of votes) {
-    const t = first.get(v.user_id);
-    if (t === undefined || v.created_at < t) first.set(v.user_id, v.created_at);
+/** 「⭕ 3　<@a> <@b> …」の 1 行。フィールドに収まらない分は「他n人」にする */
+function voteLine(mark: string, userIds: string[], withNames: boolean, maxLength: number): string {
+  const head = `${mark} ${userIds.length}`;
+  if (!withNames || userIds.length === 0) return head;
+  let line = `${head}　`;
+  let shown = 0;
+  for (const id of userIds) {
+    const piece = (shown ? " " : "") + mention(id);
+    if (line.length + piece.length > maxLength - 10) break;
+    line += piece;
+    shown++;
   }
-  return [...first.entries()].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0])).map(([id]) => id);
+  return shown < userIds.length ? `${line} 他${userIds.length - shown}人` : line;
 }
 
 /**
- * 縦が候補日、横がメンバーの表。セルは 〇 △ × と、未回答の －。
- * コードブロックの等幅表示でそろえ、列見出しは Ａ Ｂ Ｃ…、誰がどの列かは表の下に名前（メンション）で出す。
+ * 候補日ごとに 1 フィールド。見出しが日付で、中身は記号ごとに 1 行（⭕ 🔺 ❌ ➖）。
+ * 名前が折り返しても、行頭の記号でどの回答かが分かるようにする。
+ * 名前は埋め込みの文字数上限に収まる範囲で出す（全員 → ⭕🔺 だけ → 人数だけ）。
  */
-export function buildVoteTableFields(
+export function buildVoteListFields(
+  poll: Pick<PollRow, "duration_minutes">,
   candidates: CandidateRow[],
   votes: VoteRow[],
   timezone: string,
   now: number,
-): APIEmbedField[] {
-  const voters = orderVoters(votes);
-  if (voters.length === 0) {
-    return [{ name: "回答状況", value: "まだ回答はありません。[🗳️ 回答する] から回答してください。" }];
+  budget = EMBED_TEXT_LIMIT,
+): { fields: APIEmbedField[]; namesOmitted: boolean } {
+  if (votes.length === 0) {
+    const dates = candidates.map((c) => `・${candidateRange(c, poll, timezone, now)}${c.start_at <= now ? "（終了）" : ""}`);
+    return {
+      fields: [
+        { name: "候補日", value: `${dates.join("\n")}\n\nまだ回答はありません。[🗳️ 回答する] から回答してください。` },
+      ],
+      namesOmitted: false,
+    };
   }
-  const shown = voters.slice(0, MAX_TABLE_MEMBERS);
-  const cell = new Map<string, VoteValue>(votes.map((v) => [`${v.candidate_id}:${v.user_id}`, v.value]));
+  const tally = tallyVotes(candidates, votes);
+  const voters = [...new Set(votes.map((v) => v.user_id))];
+  const bestYes = Math.max(0, ...[...tally.values()].map((t) => t.yes.length));
 
-  const fields: APIEmbedField[] = [];
-  for (let from = 0; from < shown.length; from += MEMBERS_PER_TABLE) {
-    const group = shown.slice(from, from + MEMBERS_PER_TABLE);
-    const letters = [...MEMBER_LETTERS].slice(from, from + group.length);
-    const lines = [`${" ".repeat(DATE_COLUMN_WIDTH)} ${letters.join("")}`];
-    for (const c of candidates) {
-      const cells = group
-        .map((u) => {
-          const v = cell.get(`${c.id}:${u}`);
-          return v ? VOTE_MARK[v] : NO_VOTE_MARK;
-        })
-        .join("");
-      lines.push(`${formatTableDate(c.start_at, timezone)} ${cells}${c.start_at <= now ? " 終了" : ""}`);
-    }
-    const range =
-      shown.length <= MEMBERS_PER_TABLE ? "" : letters.length === 1 ? `（${letters[0]}）` : `（${letters[0]}〜${letters.at(-1)}）`;
-    fields.push({ name: `回答状況${range}`, value: "```\n" + lines.join("\n") + "\n```" });
-  }
+  const build = (named: VoteValue[]): APIEmbedField[] =>
+    candidates.map((c) => {
+      const t = tally.get(c.id)!;
+      const answered = new Set([...t.yes, ...t.maybe, ...t.no]);
+      const unanswered = voters.filter((u) => !answered.has(u));
+      const lines = [
+        voteLine(VOTE_MARK.yes, t.yes, named.includes("yes"), FIELD_VALUE_LIMIT / 2),
+        voteLine(VOTE_MARK.maybe, t.maybe, named.includes("maybe"), FIELD_VALUE_LIMIT / 4),
+      ];
+      if (t.no.length > 0) lines.push(voteLine(VOTE_MARK.no, t.no, named.includes("no"), FIELD_VALUE_LIMIT / 8));
+      if (unanswered.length > 0) {
+        lines.push(voteLine(NO_VOTE_MARK, unanswered, named.includes("no"), FIELD_VALUE_LIMIT / 8));
+      }
+      const best = bestYes > 0 && t.yes.length === bestYes ? " ⭐" : "";
+      const ended = c.start_at <= now ? "（終了）" : "";
+      return { name: `${candidateRange(c, poll, timezone, now)}${ended}${best}`, value: lines.join("\n") };
+    });
+  const size = (fields: APIEmbedField[]) => fields.reduce((n, f) => n + f.name.length + f.value.length, 0);
 
-  let legend = shown.map((u, i) => `${[...MEMBER_LETTERS][i]} ${mention(u)}`).join("　");
-  if (voters.length > shown.length) {
-    legend += `\n他 ${voters.length - shown.length} 人の回答は [📋 詳細] で確認できます`;
+  for (const named of [VOTE_VALUES, ["yes", "maybe"] as VoteValue[]]) {
+    const fields = build(named);
+    if (size(fields) <= budget) return { fields, namesOmitted: named.length < VOTE_VALUES.length };
   }
-  fields.push({ name: "メンバー", value: legend });
-  return fields;
+  return { fields: build([]), namesOmitted: true };
 }
 
 /** 公開の投票メッセージ */
@@ -143,29 +152,28 @@ export function buildPollMessage(
   timezone: string,
   now: number,
 ) {
-  const tally = tallyVotes(candidates, votes);
-  const fields = buildVoteTableFields(candidates, votes, timezone, now);
-
-  const bestYes = Math.max(0, ...[...tally.values()].map((t) => t.yes.length));
-  if (bestYes > 0) {
-    const best = candidates
-      .filter((c) => tally.get(c.id)!.yes.length === bestYes)
-      .map((c) => `${candidateRange(c, poll, timezone, now)}（${tallyText(tally.get(c.id)!)}）`);
-    fields.push({ name: "⭐ 〇が多い日", value: best.join("\n") });
-  }
-
-  const voters = new Set(votes.map((v) => v.user_id)).size;
   const cancelled = poll.state === "cancelled";
+  const title = `${cancelled ? "【中止】" : ""}🗳️ ${poll.title}（日程調整）`;
+  const voters = new Set(votes.map((v) => v.user_id)).size;
+  const legend = `${VOTE_MARK.yes} 参加できる　${VOTE_MARK.maybe} たぶん　${VOTE_MARK.no} 参加できない　${NO_VOTE_MARK} 未回答`;
+  const footerFor = (namesOmitted: boolean) =>
+    [`回答 ${voters}人`, ...(cancelled ? [] : [legend]), ...(namesOmitted ? ["名前は [📋 詳細] で確認できます"] : [])].join(
+      " ・ ",
+    );
+  const { fields, namesOmitted } = buildVoteListFields(
+    poll,
+    candidates,
+    votes,
+    timezone,
+    now,
+    EMBED_TEXT_LIMIT - title.length - header.length - footerFor(true).length,
+  );
   const embed: APIEmbed = {
-    title: `${cancelled ? "【中止】" : ""}🗳️ ${poll.title}（日程調整）`,
+    title,
     description: header,
     color: cancelled ? COLOR_CANCELLED : COLOR_OPEN,
     fields,
-    footer: {
-      text: cancelled
-        ? `回答 ${voters}人`
-        : `回答 ${voters}人 ・ 〇 参加できる　△ たぶん　× 参加できない　－ 未回答`,
-    },
+    footer: { text: footerFor(namesOmitted) },
   };
   const components: APIActionRowComponent<APIComponentInMessageActionRow>[] =
     poll.state === "open"
@@ -194,6 +202,26 @@ export function buildPollMessage(
   return { embeds: [embed], components, allowed_mentions: { parse: [] } };
 }
 
+/** 複数日で確定したあとの投票メッセージ: 確定した日程（各告知へのリンク）の一覧。ボタンは外す */
+export function buildConfirmedPollMessage(poll: Pick<PollRow, "title">, pollHeader: string, dateLinks: string[]) {
+  const rest = pollHeader
+    .split("\n")
+    .filter((line) => !line.startsWith("所要時間　"))
+    .join("\n");
+  return {
+    embeds: [
+      {
+        title: `✅ ${poll.title}（日程確定）`,
+        description: `**確定した日程**\n${dateLinks.join("\n")}${rest ? `\n\n${rest}` : ""}`,
+        color: COLOR_OPEN,
+        footer: { text: "参加・未定・不参加は、日程ごとの告知メッセージのボタンで回答してください" },
+      },
+    ],
+    components: [],
+    allowed_mentions: { parse: [] },
+  };
+}
+
 // ---- 本人にだけ見える回答パネル ----
 
 /** 1 メッセージに置けるボタンの行は 5 つまで。候補が 5 つを超えたら 4 行ずつに分け、最後の行をページ送りにする */
@@ -211,7 +239,7 @@ const SELECTED_STYLE: Record<VoteValue, APIButtonComponentWithCustomId["style"]>
 };
 
 /**
- * 回答パネル。候補日ごとに 1 行で [日付] [〇] [△] [×] を並べ、今の回答のボタンに色を付ける。
+ * 回答パネル。候補日ごとに 1 行で [日付] [⭕] [🔺] [❌] を並べ、今の回答のボタンに色を付ける。
  * 上の一覧には、候補日ごとに本人の他の予定との重なりを出す。
  */
 export function buildVotePanel(opts: {
@@ -303,8 +331,8 @@ export function buildVotePanel(opts: {
   return {
     content:
       open.length > 0
-        ? "候補日ごとに 〇（参加できる）・△（たぶん）・×（参加できない）を押してください。押すとすぐ保存され、色の付いたボタンが今の回答です。\n" +
-          "同じボタンをもう一度押すと取り消して「－（未回答）」に戻ります。"
+        ? "候補日ごとに ⭕（参加できる）・🔺（たぶん）・❌（参加できない）を押してください。押すとすぐ保存され、色の付いたボタンが今の回答です。\n" +
+          "同じボタンをもう一度押すと取り消して「➖（未回答）」に戻ります。"
         : "回答を受け付けている候補日はありません。",
     embeds: [embed],
     components: rows,
@@ -350,7 +378,9 @@ export function buildPollDetail(opts: {
           {
             type: ComponentType.StringSelect,
             custom_id: `poll:pick:${poll.id}`,
-            placeholder: "✅ 確定する日を選ぶ（運営者）",
+            placeholder: "✅ 確定する日を選ぶ（複数選べます・運営者）",
+            min_values: 1,
+            max_values: future.length,
             options: future.map((c) => ({
               label: `${formatDateTime(c.start_at, timezone, now)}　${tallyText(tally.get(c.id)!)}`,
               value: String(c.id),
