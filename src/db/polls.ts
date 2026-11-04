@@ -1,5 +1,6 @@
 export type PollState = "open" | "cancelled" | "message_deleted";
-export type VoteValue = "yes" | "maybe";
+/** yes = 〇（参加できる）/ maybe = △（たぶん）/ no = ×（参加できない）。行がなければ －（未回答） */
+export type VoteValue = "yes" | "maybe" | "no";
 
 export interface PollRow {
   id: number;
@@ -22,6 +23,8 @@ export interface VoteRow {
   candidate_id: number;
   user_id: string;
   value: VoteValue;
+  /** その候補に最初に回答した時刻 */
+  created_at: number;
   updated_at: number;
 }
 
@@ -76,52 +79,38 @@ export async function listCandidates(db: D1Database, pollId: number): Promise<Ca
 export async function listVotes(db: D1Database, pollId: number): Promise<VoteRow[]> {
   const res = await db
     .prepare(
-      `SELECT v.candidate_id, v.user_id, v.value, v.updated_at
+      `SELECT v.candidate_id, v.user_id, v.value, v.created_at, v.updated_at
        FROM poll_votes v JOIN poll_candidates c ON c.id = v.candidate_id
-       WHERE c.poll_id = ?1 ORDER BY v.updated_at, v.user_id`,
+       WHERE c.poll_id = ?1 ORDER BY v.created_at, v.user_id`,
     )
     .bind(pollId)
     .all<VoteRow>();
   return res.results;
 }
 
-/**
- * セレクトメニューで選び直した結果を保存する。
- * value の回答を `selected` の候補だけにし、そこに入っていたもう一方の回答（⭕⇔🔺）は上書きする。
- * `editable` に含まれない候補（締め切った過去の候補など）は触らない。
- */
-export async function replaceVotes(
+/** 1 つの候補日への回答を保存する。value が null なら回答を消して「－（未回答）」に戻す */
+export async function setVote(
   db: D1Database,
+  candidateId: number,
   userId: string,
-  value: VoteValue,
-  selected: number[],
-  editable: number[],
+  value: VoteValue | null,
   now: number,
 ): Promise<void> {
-  const selectedSet = new Set(selected);
-  const toRemove = editable.filter((id) => !selectedSet.has(id));
-  const statements: D1PreparedStatement[] = [];
-  if (toRemove.length > 0) {
-    const placeholders = toRemove.map((_, i) => `?${i + 3}`).join(", ");
-    statements.push(
-      db
-        .prepare(`DELETE FROM poll_votes WHERE user_id = ?1 AND value = ?2 AND candidate_id IN (${placeholders})`)
-        .bind(userId, value, ...toRemove),
-    );
+  if (value === null) {
+    await db.prepare(`DELETE FROM poll_votes WHERE candidate_id = ?1 AND user_id = ?2`).bind(candidateId, userId).run();
+    return;
   }
-  const upsert = db.prepare(
-    `INSERT INTO poll_votes (candidate_id, user_id, value, updated_at) VALUES (?1, ?2, ?3, ?4)
-     ON CONFLICT (candidate_id, user_id) DO UPDATE SET
-       value = excluded.value,
-       updated_at = CASE WHEN poll_votes.value = excluded.value
-                         THEN poll_votes.updated_at ELSE excluded.updated_at END`,
-  );
-  for (const id of selected) statements.push(upsert.bind(id, userId, value, now));
-  if (statements.length > 0) await db.batch(statements);
+  await db
+    .prepare(
+      `INSERT INTO poll_votes (candidate_id, user_id, value, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)
+       ON CONFLICT (candidate_id, user_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    )
+    .bind(candidateId, userId, value, now)
+    .run();
 }
 
 /**
- * 確定: 選ばれた候補の回答を確定イベントの回答に引き継ぎ（⭕→参加、🔺→未定）、
+ * 確定: 選ばれた候補の回答を確定イベントの回答に引き継ぎ（〇→参加、△→未定、×→不参加）、
  * 同じ告知メッセージを使うイベントを作って、日程調整（候補・投票）は物理削除する。
  * D1 の batch は 1 トランザクションなので、同時に確定されても イベントは 1 つしかできない。
  * すでに確定・中止されていれば null。
@@ -143,7 +132,7 @@ export async function confirmPoll(
     db
       .prepare(
         `INSERT INTO responses (event_id, user_id, status, updated_at)
-         SELECT (SELECT MAX(id) FROM events), user_id, CASE value WHEN 'yes' THEN 'going' ELSE 'maybe' END, ?3
+         SELECT (SELECT MAX(id) FROM events), user_id, CASE value WHEN 'yes' THEN 'going' WHEN 'maybe' THEN 'maybe' ELSE 'declined' END, ?3
          FROM poll_votes WHERE candidate_id = ?2 AND ${stillOpen}`,
       )
       .bind(poll.id, candidate.id, now),
@@ -177,6 +166,8 @@ export interface UserPollVote {
   candidate_id: number;
   start_at: number;
   value: VoteValue;
+  /** その日程調整のサーバーのタイムゾーン（表示用） */
+  timezone: string;
 }
 
 /** ユーザーが回答している、受付中の日程調整の今後の候補 */
@@ -184,10 +175,11 @@ export async function listOpenPollVotesForUser(db: D1Database, userId: string, n
   const res = await db
     .prepare(
       `SELECT p.id AS poll_id, p.guild_id, p.channel_id, p.message_id, p.title, p.duration_minutes,
-              c.id AS candidate_id, c.start_at, v.value
+              c.id AS candidate_id, c.start_at, v.value, s.timezone
        FROM poll_votes v
        JOIN poll_candidates c ON c.id = v.candidate_id
        JOIN polls p ON p.id = c.poll_id
+       JOIN servers s ON s.guild_id = p.guild_id
        WHERE v.user_id = ?1 AND p.state = 'open' AND c.start_at >= ?2
        ORDER BY c.start_at, c.id`,
     )

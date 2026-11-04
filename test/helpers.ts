@@ -11,6 +11,8 @@ import worker from "../src/index";
 
 export const GUILD_ID = "200000000000000001";
 export const CHANNEL_ID = "300000000000000001";
+/** 一部のメンバーだけが入っている秘匿チャンネル */
+export const SECRET_CHANNEL_ID = "300000000000000002";
 export const ADMIN_ID = "400000000000000001";
 export const MEMBER_ID = "400000000000000002";
 export const OPERATOR_ROLE_ID = "500000000000000001";
@@ -69,6 +71,8 @@ interface Actor {
   permissions?: string;
   roles?: string[];
   guildId?: string;
+  /** 実行したチャンネル（省略時は CHANNEL_ID） */
+  channelId?: string;
 }
 
 function member({ userId = MEMBER_ID, permissions = MEMBER_PERMS, roles = [] }: Actor) {
@@ -80,7 +84,8 @@ export function command(name: string, options: object[] = [], actor: Actor = {})
     id: "1",
     type: InteractionType.ApplicationCommand,
     guild_id: actor.guildId ?? GUILD_ID,
-    channel_id: CHANNEL_ID,
+    channel_id: actor.channelId ?? CHANNEL_ID,
+    channel: { id: actor.channelId ?? CHANNEL_ID, type: 0 },
     member: member(actor),
     data: { id: "1", name, type: ApplicationCommandType.ChatInput, options },
   };
@@ -91,7 +96,8 @@ export function modal(customId: string, values: Record<string, string>, actor: A
     id: "1",
     type: InteractionType.ModalSubmit,
     guild_id: actor.guildId ?? GUILD_ID,
-    channel_id: CHANNEL_ID,
+    channel_id: actor.channelId ?? CHANNEL_ID,
+    channel: { id: actor.channelId ?? CHANNEL_ID, type: 0 },
     member: member(actor),
     data: {
       custom_id: customId,
@@ -108,7 +114,8 @@ export function button(customId: string, message: object = { embeds: [] }, actor
     id: "1",
     type: InteractionType.MessageComponent,
     guild_id: actor.guildId ?? GUILD_ID,
-    channel_id: CHANNEL_ID,
+    channel_id: actor.channelId ?? CHANNEL_ID,
+    channel: { id: actor.channelId ?? CHANNEL_ID, type: 0 },
     member: member(actor),
     message: { id: "m", channel_id: CHANNEL_ID, ...message },
     data: { custom_id: customId, component_type: ComponentType.Button },
@@ -120,7 +127,8 @@ export function select(customId: string, values: string[], message: object = { e
     id: "1",
     type: InteractionType.MessageComponent,
     guild_id: actor.guildId ?? GUILD_ID,
-    channel_id: CHANNEL_ID,
+    channel_id: actor.channelId ?? CHANNEL_ID,
+    channel: { id: actor.channelId ?? CHANNEL_ID, type: 0 },
     member: member(actor),
     message: { id: "m", channel_id: CHANNEL_ID, ...message },
     data: { custom_id: customId, component_type: ComponentType.StringSelect, values },
@@ -132,7 +140,12 @@ export function select(customId: string, values: string[], message: object = { e
 export interface FakeMessage {
   id: string;
   channel_id: string;
-  embeds: { description?: string; title?: string; fields?: { name: string; value: string }[] }[];
+  embeds: {
+    description?: string;
+    title?: string;
+    fields?: { name: string; value: string }[];
+    footer?: { text: string };
+  }[];
   components: unknown[];
   content?: string;
 }
@@ -303,6 +316,14 @@ export async function seedPoll(opts: {
   return { pollId: poll!.id, candidateIds };
 }
 
-export async function seedVote(candidateId: number, userId: string, value: "yes" | "maybe") {
-  await env.DB.prepare("INSERT INTO poll_votes VALUES (?1, ?2, ?3, 1)").bind(candidateId, userId, value).run();
+let voteClock = 1;
+
+/** 回答を直接入れる。呼んだ順に「最初に回答した時刻」が進む（表の列の並びになる） */
+export async function seedVote(candidateId: number, userId: string, value: "yes" | "maybe" | "no") {
+  const at = voteClock++;
+  await env.DB.prepare(
+    "INSERT INTO poll_votes (candidate_id, user_id, value, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+  )
+    .bind(candidateId, userId, value, at)
+    .run();
 }

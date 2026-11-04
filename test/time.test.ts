@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { formatLocalShort, isValidTimeZone, parseCandidates, parseDuration, parseEventDateTime } from "../src/time";
+import {
+  formatDateTime,
+  formatRange,
+  formatTableDate,
+  isValidTimeZone,
+  parseCandidates,
+  parseDuration,
+  parseEventDateTime,
+} from "../src/time";
 
 const TOKYO = "Asia/Tokyo";
 // 2026-09-30 12:00 JST
@@ -80,9 +88,33 @@ describe("parseDuration", () => {
   });
 });
 
-describe("formatLocalShort", () => {
+describe("表示用の整形（タイムスタンプ記法を使わない）", () => {
+  const at = (iso: string) => Date.parse(iso) / 1000;
+
   it("サーバーのタイムゾーンで「月/日(曜) 時:分」にする", () => {
-    expect(formatLocalShort(Date.parse("2026-10-11T10:00:00Z") / 1000, TOKYO)).toBe("10/11(日) 19:00");
+    expect(formatDateTime(at("2026-10-11T10:00:00Z"), TOKYO)).toBe("10/11(日) 19:00");
+  });
+
+  it("今と年が違えば年を付ける", () => {
+    const now = at("2026-12-20T00:00:00Z");
+    expect(formatDateTime(at("2027-01-05T10:00:00Z"), TOKYO, now)).toBe("2027/1/5(火) 19:00");
+    expect(formatDateTime(at("2026-12-25T10:00:00Z"), TOKYO, now)).toBe("12/25(金) 19:00");
+  });
+
+  it("範囲は同じ日なら終了を時刻だけ、日付をまたげば日付付きにする", () => {
+    expect(formatRange(at("2026-11-12T10:00:00Z"), 120, TOKYO)).toBe("11/12(木) 19:00〜21:00");
+    expect(formatRange(at("2026-11-12T13:00:00Z"), 240, TOKYO)).toBe("11/12(木) 22:00〜11/13(金) 02:00");
+  });
+
+  it("日本時間以外ではタイムゾーンを添える", () => {
+    expect(formatRange(at("2026-11-12T00:00:00Z"), 60, "America/New_York")).toBe(
+      "11/11(水) 19:00〜20:00（America/New_York）",
+    );
+  });
+
+  it("表の日付列は幅をそろえる", () => {
+    expect(formatTableDate(at("2026-11-12T10:00:00Z"), TOKYO)).toBe("11/12(木)19:00");
+    expect(formatTableDate(at("2027-01-05T00:30:00Z"), TOKYO)).toBe(" 1/ 5(火)09:30");
   });
 });
 

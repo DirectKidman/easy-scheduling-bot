@@ -7,28 +7,26 @@ import {
   type APIMessage,
   type APIModalSubmitGuildInteraction,
 } from "discord-api-types/v10";
-import { deleteEvent, getServer, insertEvent, setEventMessage, type EventRow } from "../db/queries";
+import { deleteEvent, ensureServer, getServerOrDefault, insertEvent, setEventMessage, type EventRow } from "../db/queries";
 import { isOperator } from "../discord/permissions";
 import { DiscordErrorCode, discordRequest, isDiscordError } from "../discord/rest";
 import { defer, ephemeral, type Context } from "../interaction";
 import { buildAnnouncement, buildHeader, messageLink } from "../render";
 import { parseDuration, parseEventDateTime } from "../time";
-import { getModalValue } from "./options";
+import { cannotPostMessage, getModalValue, interactionChannelId } from "./options";
 
 export const EVENT_MODAL_ID = "event:create";
 
 /** 未来すぎる日時の入力ミスを防ぐ上限（2年） */
 export const MAX_AHEAD_SECONDS = 2 * 366 * 24 * 60 * 60;
 
-const NOT_SET_UP = "このサーバーはまだ設定されていません。サーバー管理者が `/setup` を実行してください。";
 const NOT_OPERATOR = "イベントを作成できるのは運営者（サーバー管理権限または運営ロールを持つ人）だけです。";
 
 export async function handleEventCommand(
   ctx: Context,
   interaction: APIChatInputApplicationCommandGuildInteraction,
 ): Promise<APIInteractionResponse> {
-  const server = await getServer(ctx.env.DB, interaction.guild_id);
-  if (!server) return ephemeral(NOT_SET_UP);
+  const server = await getServerOrDefault(ctx.env.DB, interaction.guild_id);
   if (!isOperator(interaction.member, server)) return ephemeral(NOT_OPERATOR);
 
   const input = (customId: string, label: string, opts: Record<string, unknown>) => ({
@@ -66,10 +64,12 @@ export async function handleEventModal(
   ctx: Context,
   interaction: APIModalSubmitGuildInteraction,
 ): Promise<APIInteractionResponse> {
-  const server = await getServer(ctx.env.DB, interaction.guild_id);
-  if (!server) return ephemeral(NOT_SET_UP);
+  const server = await getServerOrDefault(ctx.env.DB, interaction.guild_id);
   // モーダルを開いた後に権限が外れた場合に備えて、送信時にも確認する
   if (!isOperator(interaction.member, server)) return ephemeral(NOT_OPERATOR);
+  // 告知はコマンドを実行したチャンネルに出す（秘匿チャンネルで実行すれば、そのチャンネルの人にだけ届く）
+  const channelId = interactionChannelId(interaction);
+  if (!channelId) return ephemeral("チャンネルの中で実行してください。");
 
   const title = getModalValue(interaction, "title")?.trim() ?? "";
   const datetime = getModalValue(interaction, "datetime") ?? "";
@@ -86,9 +86,10 @@ export async function handleEventModal(
 
   const hostId = interaction.member.user.id;
   return defer(ctx, interaction.token, "message", async () => {
+    await ensureServer(ctx.env.DB, server.guild_id, channelId);
     const eventId = await insertEvent(ctx.env.DB, {
       guild_id: server.guild_id,
-      channel_id: server.announce_channel_id,
+      channel_id: channelId,
       title,
       start_at: parsed.unix,
       duration_minutes: duration.minutes,
@@ -96,14 +97,22 @@ export async function handleEventModal(
     const event: EventRow = {
       id: eventId,
       guild_id: server.guild_id,
-      channel_id: server.announce_channel_id,
+      channel_id: channelId,
       message_id: null,
       title,
       start_at: parsed.unix,
       duration_minutes: duration.minutes,
       state: "scheduled",
     };
-    const header = buildHeader({ startAt: parsed.unix, durationMinutes: duration.minutes, location, hostId, description });
+    const header = buildHeader({
+      startAt: parsed.unix,
+      durationMinutes: duration.minutes,
+      timezone: server.timezone,
+      now: ctx.now,
+      location,
+      hostId,
+      description,
+    });
 
     let message: APIMessage;
     try {
@@ -120,11 +129,7 @@ export async function handleEventModal(
           DiscordErrorCode.UnknownChannel,
         )
       ) {
-        return {
-          content:
-            `⚠️ 告知チャンネル <#${event.channel_id}> に投稿できませんでした。` +
-            "bot の権限（チャンネルを見る・メッセージを送信・埋め込みリンク）を確認するか、`/setup` でチャンネルを設定し直してください。",
-        };
+        return { content: cannotPostMessage(event.channel_id) };
       }
       throw err;
     }

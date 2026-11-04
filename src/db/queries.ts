@@ -4,7 +4,6 @@ export type ReminderMode = "channel" | "dm";
 
 export interface ServerRow {
   guild_id: string;
-  announce_channel_id: string;
   operator_role_id: string | null;
   timezone: string;
   reminder_mode: ReminderMode;
@@ -30,33 +29,67 @@ export interface ResponseRow {
 
 // ---- servers ----
 
+export const DEFAULT_TIMEZONE = "Asia/Tokyo";
+
 export function getServer(db: D1Database, guildId: string): Promise<ServerRow | null> {
   return db
     .prepare(
-      `SELECT guild_id, announce_channel_id, operator_role_id, timezone, reminder_mode, deletion_scheduled_at
+      `SELECT guild_id, operator_role_id, timezone, reminder_mode, deletion_scheduled_at
        FROM servers WHERE guild_id = ?1`,
     )
     .bind(guildId)
     .first<ServerRow>();
 }
 
+/** /setup をまだ実行していないサーバーの設定（運営者はサーバー管理権限を持つ人だけ） */
+export function defaultServer(guildId: string): ServerRow {
+  return {
+    guild_id: guildId,
+    operator_role_id: null,
+    timezone: DEFAULT_TIMEZONE,
+    reminder_mode: "channel",
+    deletion_scheduled_at: null,
+  };
+}
+
+/** 設定があればそれを、なければ既定値を返す（DB には書かない） */
+export async function getServerOrDefault(db: D1Database, guildId: string): Promise<ServerRow> {
+  return (await getServer(db, guildId)) ?? defaultServer(guildId);
+}
+
+// servers.announce_channel_id は使わなくなった列（告知はコマンドを実行したチャンネルに出す）。
+// NOT NULL 制約が残っているので、行を作るときだけ、そのとき実行されたチャンネルを入れておく。
+
 export async function upsertServer(
   db: D1Database,
-  s: Pick<ServerRow, "guild_id" | "announce_channel_id" | "operator_role_id" | "timezone" | "reminder_mode">,
+  s: Pick<ServerRow, "guild_id" | "operator_role_id" | "timezone" | "reminder_mode">,
+  channelId: string,
 ): Promise<void> {
   await db
     .prepare(
       `INSERT INTO servers (guild_id, announce_channel_id, operator_role_id, timezone, reminder_mode)
        VALUES (?1, ?2, ?3, ?4, ?5)
        ON CONFLICT (guild_id) DO UPDATE SET
-         announce_channel_id = excluded.announce_channel_id,
          operator_role_id    = excluded.operator_role_id,
          timezone            = excluded.timezone,
          reminder_mode       = excluded.reminder_mode,
          deletion_scheduled_at = NULL,
          updated_at          = unixepoch()`,
     )
-    .bind(s.guild_id, s.announce_channel_id, s.operator_role_id, s.timezone, s.reminder_mode)
+    .bind(s.guild_id, channelId, s.operator_role_id, s.timezone, s.reminder_mode)
+    .run();
+}
+
+/** イベント・日程調整を作る前に、サーバーの行がなければ既定値で作る（外部キーのため） */
+export async function ensureServer(db: D1Database, guildId: string, channelId: string): Promise<void> {
+  const d = defaultServer(guildId);
+  await db
+    .prepare(
+      `INSERT INTO servers (guild_id, announce_channel_id, operator_role_id, timezone, reminder_mode)
+       VALUES (?1, ?2, NULL, ?3, ?4)
+       ON CONFLICT (guild_id) DO NOTHING`,
+    )
+    .bind(guildId, channelId, d.timezone, d.reminder_mode)
     .run();
 }
 
@@ -166,6 +199,7 @@ export interface ReminderCandidate extends EventRow {
   reminded_day_before_at: number | null;
   reminded_day_of_at: number | null;
   reminder_mode: ReminderMode;
+  timezone: string;
 }
 
 /** リマインドの候補: 24 時間以内に始まり、どちらかのリマインドが未送信のイベント */
@@ -178,7 +212,7 @@ export async function listReminderCandidates(
   const res = await db
     .prepare(
       `SELECT e.id, e.guild_id, e.channel_id, e.message_id, e.title, e.start_at, e.duration_minutes, e.state, e.created_at,
-              e.reminded_day_before_at, e.reminded_day_of_at, s.reminder_mode
+              e.reminded_day_before_at, e.reminded_day_of_at, s.reminder_mode, s.timezone
        FROM events e JOIN servers s ON s.guild_id = e.guild_id
        WHERE e.state = 'scheduled' AND e.message_id IS NOT NULL
          AND e.start_at > ?1 AND e.start_at <= ?2
@@ -261,7 +295,10 @@ export interface UpcomingRow {
   message_id: string | null;
   title: string;
   start_at: number;
+  duration_minutes: number;
   status: RsvpStatus;
+  /** そのイベントのサーバーのタイムゾーン（表示用） */
+  timezone: string;
 }
 
 /** /my 用: 全サーバー横断で、ユーザーが回答した今後の予定 */
@@ -274,8 +311,9 @@ export async function listUpcomingForUser(
   const placeholders = statuses.map((_, i) => `?${i + 3}`).join(", ");
   const res = await db
     .prepare(
-      `SELECT e.id AS event_id, e.guild_id, e.channel_id, e.message_id, e.title, e.start_at, r.status
-       FROM responses r JOIN events e ON e.id = r.event_id
+      `SELECT e.id AS event_id, e.guild_id, e.channel_id, e.message_id, e.title, e.start_at, e.duration_minutes,
+              r.status, s.timezone
+       FROM responses r JOIN events e ON e.id = r.event_id JOIN servers s ON s.guild_id = e.guild_id
        WHERE r.user_id = ?1 AND e.start_at >= ?2 AND e.state = 'scheduled'
          AND r.status IN (${placeholders})
        ORDER BY e.start_at, e.id`,
@@ -289,8 +327,9 @@ export async function listUpcomingForUser(
 export async function listFutureEventsForUser(db: D1Database, userId: string, now: number): Promise<UpcomingRow[]> {
   const res = await db
     .prepare(
-      `SELECT e.id AS event_id, e.guild_id, e.channel_id, e.message_id, e.title, e.start_at, r.status
-       FROM responses r JOIN events e ON e.id = r.event_id
+      `SELECT e.id AS event_id, e.guild_id, e.channel_id, e.message_id, e.title, e.start_at, e.duration_minutes,
+              r.status, s.timezone
+       FROM responses r JOIN events e ON e.id = r.event_id JOIN servers s ON s.guild_id = e.guild_id
        WHERE r.user_id = ?1 AND e.start_at >= ?2 AND e.state = 'scheduled'
        ORDER BY e.start_at, e.id`,
     )
@@ -333,9 +372,7 @@ export async function deleteAllResponses(db: D1Database, userId: string): Promis
   return res.meta.changes;
 }
 
-export interface CommitmentRow extends UpcomingRow {
-  duration_minutes: number;
-}
+export type CommitmentRow = UpcomingRow;
 
 /** 予定の重なり判定用: [from, to) と時間が重なる、参加・未定と回答した予定のイベント */
 export async function listCommitmentsForUser(
@@ -346,8 +383,9 @@ export async function listCommitmentsForUser(
 ): Promise<CommitmentRow[]> {
   const res = await db
     .prepare(
-      `SELECT e.id AS event_id, e.guild_id, e.channel_id, e.message_id, e.title, e.start_at, e.duration_minutes, r.status
-       FROM responses r JOIN events e ON e.id = r.event_id
+      `SELECT e.id AS event_id, e.guild_id, e.channel_id, e.message_id, e.title, e.start_at, e.duration_minutes,
+              r.status, s.timezone
+       FROM responses r JOIN events e ON e.id = r.event_id JOIN servers s ON s.guild_id = e.guild_id
        WHERE r.user_id = ?1 AND e.state = 'scheduled' AND r.status IN ('going', 'maybe')
          AND e.start_at < ?3 AND e.start_at + e.duration_minutes * 60 > ?2
        ORDER BY e.start_at, e.id`,

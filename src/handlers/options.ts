@@ -30,3 +30,17 @@ export function getModalValue(interaction: APIModalSubmitInteraction, customId: 
   }
   return undefined;
 }
+
+/** インタラクションが実行されたチャンネル（スレッドならスレッド）の ID */
+export function interactionChannelId(interaction: { channel?: { id: string }; channel_id?: string }): string | undefined {
+  return interaction.channel?.id ?? interaction.channel_id;
+}
+
+/** 告知を投稿できなかったときの案内（秘匿チャンネルに bot が入っていない場合が多い） */
+export function cannotPostMessage(channelId: string): string {
+  return (
+    `⚠️ <#${channelId}> に投稿できませんでした。\n` +
+    "秘匿チャンネルなど、bot が入っていないチャンネルでは、チャンネルの設定 →「権限」で bot（または bot のロール）を追加し、" +
+    "「チャンネルを見る」「メッセージを送信」「埋め込みリンク」「メッセージ履歴を読む」を許可してください。"
+  );
+}
