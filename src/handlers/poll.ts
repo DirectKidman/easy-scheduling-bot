@@ -172,10 +172,28 @@ export async function handlePollComponent(
   const [, action, idText, ...args] = interaction.data.custom_id.split(":");
   const pollId = Number(idText);
   if (!Number.isSafeInteger(pollId)) return ephemeral("不明な操作です。");
-  const poll = await getPoll(ctx.env.DB, pollId);
-  if (!poll || poll.guild_id !== interaction.guild_id) return ephemeral(GONE);
-  const server = await getServerOrDefault(ctx.env.DB, poll.guild_id);
   const userId = interaction.member.user.id;
+
+  // ⭕🔺❌: 押されたパネルをその場で書き換えて、DB を一度も待たずに返す。
+  // 日程調整の確認・保存・投票メッセージの描き直しは応答の後に行う（persistVote）
+  if (action === "v") {
+    const [candText, value, pageText] = args;
+    if (!VOTE_VALUES.includes(value as VoteValue)) return ephemeral("不明な操作です。");
+    const instant = applyVoteToPanel(interaction.message, interaction.data.custom_id);
+    if (instant) {
+      const vote = { candidateId: Number(candText), value: instant.value, page: Number(pageText) || 0 };
+      ctx.exec.waitUntil(
+        persistVote(ctx, pollId, interaction, vote).catch((err) => logError("persist vote failed", err)),
+      );
+      return { type: InteractionResponseType.UpdateMessage, data: { ...instant.body, allowed_mentions: { parse: [] } } };
+    }
+  }
+
+  const [poll, server] = await Promise.all([
+    getPoll(ctx.env.DB, pollId),
+    getServerOrDefault(ctx.env.DB, interaction.guild_id),
+  ]);
+  if (!poll || poll.guild_id !== interaction.guild_id) return ephemeral(GONE);
 
   switch (action) {
     case "vote":
@@ -184,22 +202,9 @@ export async function handlePollComponent(
     case "page":
       return defer(ctx, interaction.token, "update", () => votePanel(ctx, poll, server, userId, Number(args[0]) || 0));
     case "v": {
+      // パネルが想定した形でなかったとき: 従来どおり DB から作り直す
       if (poll.state !== "open") return ephemeral("この日程調整は受付を終了しています。");
       const [candText, value, pageText] = args;
-      if (!VOTE_VALUES.includes(value as VoteValue)) return ephemeral("不明な操作です。");
-      // 押されたパネルをその場で書き換えてすぐ返し、保存と投票メッセージの描き直しは応答の後に行う
-      const instant = applyVoteToPanel(interaction.message, interaction.data.custom_id);
-      if (instant) {
-        ctx.exec.waitUntil(
-          persistVote(ctx, poll, server, userId, Number(candText), instant.value, Number(pageText) || 0, interaction).catch(
-            (err) => logError("persist vote failed", err),
-          ),
-        );
-        return {
-          type: InteractionResponseType.UpdateMessage,
-          data: { ...instant.body, allowed_mentions: { parse: [] } },
-        };
-      }
       return defer(ctx, interaction.token, "update", () =>
         saveVote(ctx, poll, server, userId, Number(candText), value as VoteValue, Number(pageText) || 0, interaction.id),
       );
@@ -328,28 +333,34 @@ async function saveVote(
 }
 
 /**
- * すぐ返したパネルの回答を保存する。受け付けられなければ（開始済みの候補など）、パネルを DB の状態に戻す。
- * value は押した後の回答（null は取り消し）。トグルの判定はパネル側で済ませている。
+ * すぐ返したパネルの回答を保存する。value は押した後の回答（null は取り消し）。トグルの判定はパネル側で済ませている。
+ * 応答の前には何も確認していないので、ここで日程調整（別サーバーのものでないか・受付中か）と候補日を確かめる。
+ * 受け付けられなければ保存せず、パネルを案内や DB の状態に戻す。
  * 保存の順番が前後しても、押した時刻が最も新しい回答が残る（`setVote`）。
  */
 async function persistVote(
   ctx: Context,
-  poll: PollRow,
-  server: ServerRow,
-  userId: string,
-  candidateId: number,
-  value: VoteValue | null,
-  page: number,
-  interaction: { id: string; token: string },
+  pollId: number,
+  interaction: APIMessageComponentGuildInteraction,
+  vote: { candidateId: number; value: VoteValue | null; page: number },
 ): Promise<void> {
+  const [poll, server] = await Promise.all([
+    getPoll(ctx.env.DB, pollId),
+    getServerOrDefault(ctx.env.DB, interaction.guild_id),
+  ]);
+  const reject = (content: string) => editOriginal(ctx.env, interaction.token, { content, embeds: [], components: [] });
+  if (!poll || poll.guild_id !== interaction.guild_id) return void (await reject(GONE));
+  if (poll.state !== "open") return void (await reject("この日程調整は受付を終了しています。"));
+
+  const userId = interaction.member.user.id;
   const candidates = await listCandidates(ctx.env.DB, poll.id);
-  const candidate = candidates.find((c) => c.id === candidateId);
+  const candidate = candidates.find((c) => c.id === vote.candidateId);
   if (!candidate || candidate.start_at <= ctx.now) {
-    await editOriginal(ctx.env, interaction.token, await votePanel(ctx, poll, server, userId, page));
+    await editOriginal(ctx.env, interaction.token, await votePanel(ctx, poll, server, userId, vote.page));
     return;
   }
   // 後から押した分がもう保存されていれば、この回答は捨てる（投票メッセージの描き直しもそちらに任せる）
-  if (await setVote(ctx.env.DB, candidateId, userId, value, ctx.now, interactionTime(interaction.id))) {
+  if (await setVote(ctx.env.DB, vote.candidateId, userId, vote.value, ctx.now, interactionTime(interaction.id))) {
     await refreshPollMessage(ctx, poll);
   }
 }

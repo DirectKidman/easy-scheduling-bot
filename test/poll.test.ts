@@ -516,6 +516,23 @@ describe("回答パネル（日付ごとの ⭕🔺❌ ボタンと、予定の�
     expect(vote.data.content).toContain("見つかりません");
     expect(await votesOf(MEMBER_ID)).toEqual([]);
   });
+
+  it("すぐ返したパネルでも、別サーバー・受付終了の日程調整には保存せず、パネルを案内に置き換える", async () => {
+    await seedServer();
+    const { pollId, candidateIds } = await seedPoll({ starts: [nowSec() + DAY, nowSec() + 2 * DAY] });
+    await interact(button(`poll:vote:${pollId}`));
+    const panel = discord.followups()[0];
+
+    const other = await interact(button(`poll:v:${pollId}:${candidateIds[0]}:yes:0`, panel, { guildId: "999" }));
+    expect(other.type).toBe(InteractionResponseType.UpdateMessage);
+    expect(discord.followups().at(-1)).toMatchObject({ content: expect.stringContaining("見つかりません"), components: [] });
+    expect(await votesOf(MEMBER_ID)).toEqual([]);
+
+    await env.DB.prepare("UPDATE polls SET state = 'cancelled' WHERE id = ?1").bind(pollId).run();
+    await interact(button(`poll:v:${pollId}:${candidateIds[0]}:yes:0`, panel));
+    expect(discord.followups().at(-1)).toMatchObject({ content: expect.stringContaining("受付を終了"), components: [] });
+    expect(await votesOf(MEMBER_ID)).toEqual([]);
+  });
 });
 
 describe("確定・中止", () => {
