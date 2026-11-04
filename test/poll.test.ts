@@ -493,10 +493,10 @@ describe("確定・中止", () => {
     expect(detail.data.components[0].components[0]).toMatchObject({ min_values: 1, max_values: 2 });
 
     const confirm = await interact(select(`poll:pick:${pollId}`, [String(c2), String(c1)], {}, admin));
-    expect(confirm.data.content).toContain("次の 2 日程で確定しますか");
+    expect(confirm.data.content).toContain("次の 2 日間で確定しますか");
     expect(confirm.data.content).toContain("⭕1 🔺1 ❌1");
     const fix = confirm.data.components[0].components[0];
-    expect(fix).toMatchObject({ custom_id: `poll:fix:${pollId}:1.2`, label: "2 日程で確定する" });
+    expect(fix).toMatchObject({ custom_id: `poll:fix:${pollId}:1.2`, label: "2 日間で確定する" });
     await interact(button(fix.custom_id, {}, admin));
 
     const events = (
@@ -544,7 +544,7 @@ describe("確定・中止", () => {
     expect(pollMsg.embeds[0]!.description).toContain("場所　#voice-1");
     expect(pollMsg.embeds[0]!.description).not.toContain("所要時間");
     expect(pollMsg.components).toEqual([]);
-    expect(discord.followups().at(-1).content).toContain("2 日程で確定し");
+    expect(discord.followups().at(-1).content).toContain("2 日間で確定し");
   });
 
   it("告知を投稿できなければ、投稿済みの告知を消して日程調整を残す", async () => {

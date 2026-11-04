@@ -344,7 +344,7 @@ async function confirmPick(
     ];
   } else {
     content = [
-      `「${poll.title}」を次の ${chosen.length} 日程で確定しますか？`,
+      `「${poll.title}」を次の ${chosen.length} 日間で確定しますか？`,
       ...chosen.map((c) => `・**${range(c)}**　${tallyText(tally.get(c.id)!)}`),
       "日程ごとに、⭕ の人は「参加」、🔺 の人は「未定」、❌ の人は「不参加」として引き継ぎます。",
       "日程ごとに告知メッセージを投稿し（それぞれがリマインドの対象になります）、投票メッセージは確定した日程の一覧に切り替わります。候補日ごとの投票データは削除されます。",
@@ -360,7 +360,7 @@ async function confirmPick(
             type: ComponentType.Button,
             style: ButtonStyle.Success,
             custom_id: `poll:fix:${poll.id}:${chosen.map((c) => c.position).join(".")}`,
-            label: chosen.length === 1 ? "確定する" : `${chosen.length} 日程で確定する`,
+            label: chosen.length === 1 ? "確定する" : `${chosen.length} 日間で確定する`,
           },
         ],
       },
@@ -499,7 +499,7 @@ async function confirmMany(
     note = "\n（投票メッセージが見つからなかったため、投票メッセージは更新していません。）";
   }
   return {
-    content: `✅ 「${poll.title}」を ${chosen.length} 日程で確定し、日程ごとに告知を投稿しました。\n${lines.join("\n")}${note}`,
+    content: `✅ 「${poll.title}」を ${chosen.length} 日間で確定し、日程ごとに告知を投稿しました。\n${lines.join("\n")}${note}`,
     embeds: [],
     components: [],
   };
