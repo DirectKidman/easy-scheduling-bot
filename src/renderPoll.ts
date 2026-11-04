@@ -7,7 +7,7 @@ import {
   type APIEmbed,
   type APIEmbedField,
 } from "discord-api-types/v10";
-import { formatBusyLine, NO_VOTE_MARK, VOTE_MARK, type Busy } from "./conflicts";
+import { formatBusyItem, NO_VOTE_MARK, VOTE_MARK, type Busy } from "./conflicts";
 import type { CandidateRow, PollRow, VoteRow, VoteValue } from "./db/polls";
 import { mention } from "./render";
 import { formatDateTime, formatRange } from "./time";
@@ -263,7 +263,7 @@ export function buildVotePanel(opts: {
     const my = myVotes.get(c.id);
     const ended = c.start_at <= now ? "（終了）" : "";
     lines.push(`${candidateRange(c, poll, timezone, now)}　あなた: ${my ? VOTE_MARK[my] : NO_VOTE_MARK}${ended}`);
-    for (const b of conflicts.get(c.id) ?? []) lines.push(`　└ ⚠️ ${formatBusyLine(b, guildNames, now)}`);
+    for (const b of conflicts.get(c.id) ?? []) lines.push(formatBusyItem(b, guildNames, c.start_at, timezone, now));
   }
   const conflictCount = [...conflicts.values()].filter((l) => l.length > 0).length;
   let description = lines.join("\n");
@@ -370,7 +370,8 @@ export function applyVoteToPanel(
   const lines = embed.description.split("\n");
   const openLines = lines
     .map((line, i) => ({ line, i }))
-    .filter(({ line }) => !line.startsWith("　└") && !line.endsWith("（終了）"));
+    // 重なりの行は箇条書き（以前のパネルでは「　└」で始まる）
+    .filter(({ line }) => !line.startsWith("- ") && !line.startsWith("　└") && !line.endsWith("（終了）"));
   const paged = rows.some((row) => hasPrefix(row, "poll:page:"));
   const target = openLines[(paged ? (Number(pageText) || 0) * ROWS_PER_PAGE : 0) + rowIndex];
   if (!target || !/あなた: \S+$/.test(target.line)) return null;
