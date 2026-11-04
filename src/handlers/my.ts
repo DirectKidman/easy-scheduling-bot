@@ -55,7 +55,7 @@ export function handleMy(
       embeds.push({
         title: "🗳️ 回答中の日程調整",
         description: lines.join("\n"),
-        footer: { text: "回答した今後の候補日を表示しています（〇 参加できる　△ たぶん　× 参加できない）" },
+        footer: { text: "回答した今後の候補日を表示しています（⭕ 参加できる　🔺 たぶん　❌ 参加できない）" },
       });
     }
     return { embeds };

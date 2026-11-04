@@ -20,7 +20,7 @@ export interface Busy {
   end_at: number;
   /** その予定のサーバーのタイムゾーン（表示用） */
   timezone: string;
-  /** ✅ 🤔（イベント）/ 〇 △（日程調整の候補） */
+  /** ✅ 🤔（イベント）/ ⭕ 🔺（日程調整の候補） */
   mark: string;
   link: string | null;
 }
@@ -31,13 +31,13 @@ export interface Range {
 }
 
 /** 日程調整の回答の記号。未回答は NO_VOTE_MARK */
-export const VOTE_MARK: Record<VoteValue, string> = { yes: "〇", maybe: "△", no: "×" };
-export const NO_VOTE_MARK = "－";
+export const VOTE_MARK: Record<VoteValue, string> = { yes: "⭕", maybe: "🔺", no: "❌" };
+export const NO_VOTE_MARK = "➖";
 
 /**
  * ユーザーの予定のうち、[from, to) と重なりうるものを集める。
  * - 参加・未定と回答した確定イベント
- * - 受付中の別の日程調整で 〇・△ を付けた候補（× は予定ではないので含めない）
+ * - 受付中の別の日程調整で ⭕・🔺 を付けた候補（❌ は予定ではないので含めない）
  */
 export async function collectBusy(
   env: Env,

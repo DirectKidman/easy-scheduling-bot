@@ -20,20 +20,30 @@ import {
   setPollMessage,
   setVote,
   transitionPollState,
+  type CandidateRow,
   type PollRow,
   type VoteValue,
 } from "../db/polls";
-import { ensureServer, getEvent, getServerOrDefault, listResponses, type ServerRow } from "../db/queries";
+import {
+  ensureServer,
+  getEvent,
+  getServerOrDefault,
+  listResponses,
+  type EventRow,
+  type ServerRow,
+} from "../db/queries";
 import { isOperator } from "../discord/permissions";
 import { DiscordErrorCode, discordRequest, isDiscordError } from "../discord/rest";
 import { defer, ephemeral, ephemeralMessage, logError, type Context, type MessageBody } from "../interaction";
 import { buildAnnouncement, messageLink } from "../render";
 import {
+  buildConfirmedPollMessage,
   buildPollDetail,
   buildPollHeader,
   buildPollMessage,
   buildVotePanel,
   pollHeaderToEventHeader,
+  tallyText,
   tallyVotes,
   VOTE_VALUES,
 } from "../renderPoll";
@@ -142,7 +152,8 @@ export async function handlePollModal(
 /**
  * custom_id は `poll:<操作>:<日程調整ID>[:<引数>…]`。
  * - `poll:vote:<ID>` 回答パネルを開く / `poll:v:<ID>:<候補ID>:<yes|maybe|no>:<ページ>` 回答 / `poll:page:<ID>:<ページ>`
- * - `poll:detail:<ID>` 詳細 / `poll:pick:<ID>`・`poll:confirm:<ID>:<候補ID>` 確定 / `poll:cancel:<ID>`・`poll:cancelok:<ID>` 中止
+ * - `poll:detail:<ID>` 詳細 / `poll:pick:<ID>`・`poll:fix:<ID>:<候補の位置>.<候補の位置>…` 確定 / `poll:cancel:<ID>`・`poll:cancelok:<ID>` 中止
+ *   （確定ボタンは候補 ID ではなく位置を並べる。custom_id の 100 文字に、候補 20 個ぶんを収めるため）
  */
 export async function handlePollComponent(
   ctx: Context,
@@ -184,10 +195,15 @@ export async function handlePollComponent(
   switch (action) {
     case "pick": {
       const values = "values" in interaction.data ? interaction.data.values : [];
-      return confirmPick(ctx, poll, server, Number(values[0]));
+      return confirmPick(ctx, poll, server, values.map(Number));
     }
+    case "fix":
+      return defer(ctx, interaction.token, "update", () =>
+        executeConfirm(ctx, poll, server, (args[0] ?? "").split(".").map(Number)),
+      );
     case "confirm":
-      return defer(ctx, interaction.token, "update", () => executeConfirm(ctx, poll, server, Number(args[0])));
+      // 以前の 1 日だけ確定するボタン（開いたままのもの）からの操作
+      return update({ content: "確定の画面が新しくなりました。[📋 詳細] から開き直してください。" });
     case "cancel":
       return update({
         content: `「${poll.title}」の日程調整を中止しますか？投票メッセージの回答ボタンが無効になります。`,
@@ -261,7 +277,7 @@ async function votePanel(
   });
 }
 
-/** 1 つの候補日への回答。今と同じボタンを押したら取り消し（－）にする */
+/** 1 つの候補日への回答。今と同じボタンを押したら取り消し（➖）にする */
 async function saveVote(
   ctx: Context,
   poll: PollRow,
@@ -298,22 +314,44 @@ async function pollDetail(
   );
 }
 
+/** 選んだ候補のうち、まだ始まっていないものを日時順に。選べないものが混ざっていれば null */
+function pickedCandidates(candidates: CandidateRow[], picked: (c: CandidateRow) => boolean, count: number, now: number) {
+  const chosen = candidates.filter(picked);
+  if (chosen.length === 0 || chosen.length !== count || chosen.some((c) => c.start_at <= now)) return null;
+  return chosen;
+}
+
 async function confirmPick(
   ctx: Context,
   poll: PollRow,
   server: ServerRow,
-  candidateId: number,
+  candidateIds: number[],
 ): Promise<APIInteractionResponse> {
   const [candidates, votes] = await Promise.all([listCandidates(ctx.env.DB, poll.id), listVotes(ctx.env.DB, poll.id)]);
-  const candidate = candidates.find((c) => c.id === candidateId);
-  if (!candidate || candidate.start_at <= ctx.now) return update({ content: "その候補日は選べません。" });
-  const t = tallyVotes(candidates, votes).get(candidate.id)!;
-  return update({
-    content: [
-      `「${poll.title}」を **${formatRange(candidate.start_at, poll.duration_minutes, server.timezone, ctx.now)}** で確定しますか？`,
-      `この日に 〇 の ${t.yes.length} 人は「参加」、△ の ${t.maybe.length} 人は「未定」、× の ${t.no.length} 人は「不参加」として引き継ぎます。`,
+  const ids = new Set(candidateIds);
+  const chosen = pickedCandidates(candidates, (c) => ids.has(c.id), ids.size, ctx.now);
+  if (!chosen) return update({ content: "その候補日は選べません。" });
+  const tally = tallyVotes(candidates, votes);
+  const range = (c: CandidateRow) => formatRange(c.start_at, poll.duration_minutes, server.timezone, ctx.now);
+
+  let content: string[];
+  if (chosen.length === 1) {
+    const t = tally.get(chosen[0]!.id)!;
+    content = [
+      `「${poll.title}」を **${range(chosen[0]!)}** で確定しますか？`,
+      `この日に ⭕ の ${t.yes.length} 人は「参加」、🔺 の ${t.maybe.length} 人は「未定」、❌ の ${t.no.length} 人は「不参加」として引き継ぎます。`,
       "投票メッセージは確定イベントの告知に切り替わり、リマインドの対象になります。候補日ごとの投票データは削除されます。",
-    ].join("\n"),
+    ];
+  } else {
+    content = [
+      `「${poll.title}」を次の ${chosen.length} 日程で確定しますか？`,
+      ...chosen.map((c) => `・**${range(c)}**　${tallyText(tally.get(c.id)!)}`),
+      "日程ごとに、⭕ の人は「参加」、🔺 の人は「未定」、❌ の人は「不参加」として引き継ぎます。",
+      "日程ごとに告知メッセージを投稿し（それぞれがリマインドの対象になります）、投票メッセージは確定した日程の一覧に切り替わります。候補日ごとの投票データは削除されます。",
+    ];
+  }
+  return update({
+    content: content.join("\n"),
     components: [
       {
         type: ComponentType.ActionRow,
@@ -321,8 +359,8 @@ async function confirmPick(
           {
             type: ComponentType.Button,
             style: ButtonStyle.Success,
-            custom_id: `poll:confirm:${poll.id}:${candidate.id}`,
-            label: "確定する",
+            custom_id: `poll:fix:${poll.id}:${chosen.map((c) => c.position).join(".")}`,
+            label: chosen.length === 1 ? "確定する" : `${chosen.length} 日程で確定する`,
           },
         ],
       },
@@ -334,11 +372,12 @@ async function executeConfirm(
   ctx: Context,
   poll: PollRow,
   server: ServerRow,
-  candidateId: number,
+  positions: number[],
 ): Promise<MessageBody> {
   const candidates = await listCandidates(ctx.env.DB, poll.id);
-  const candidate = candidates.find((c) => c.id === candidateId);
-  if (!candidate || candidate.start_at <= ctx.now) return { content: "その候補日は選べません。", components: [] };
+  const wanted = new Set(positions);
+  const chosen = pickedCandidates(candidates, (c) => wanted.has(c.position), wanted.size, ctx.now);
+  if (!chosen) return { content: "その候補日は選べません。", components: [] };
 
   // 先に投票メッセージの本文を読んでおく（確定後は日程調整の行が消えるため）
   let pollHeader: string | undefined;
@@ -354,25 +393,113 @@ async function executeConfirm(
       if (!isDiscordError(err, DiscordErrorCode.UnknownMessage, DiscordErrorCode.UnknownChannel)) throw err;
     }
   }
+  const whenOf = (c: CandidateRow) => formatRange(c.start_at, poll.duration_minutes, server.timezone, ctx.now);
+  const headerOf = (c: CandidateRow) => {
+    const dateLine = `日時　${whenOf(c)}`;
+    return pollHeader ? pollHeaderToEventHeader(pollHeader, dateLine) : dateLine;
+  };
+  return chosen.length === 1
+    ? confirmOne(ctx, poll, chosen[0]!, pollHeader, whenOf, headerOf)
+    : confirmMany(ctx, poll, chosen, pollHeader, whenOf, headerOf);
+}
 
-  const eventId = await confirmPoll(ctx.env.DB, poll, candidate, ctx.now);
-  if (eventId === null) return { content: "この日程調整はすでに確定または中止されています。", components: [] };
-  const event = (await getEvent(ctx.env.DB, eventId))!;
-  const when = formatRange(event.start_at, event.duration_minutes, server.timezone, ctx.now);
-  const dateLine = `日時　${when}`;
-  const header = pollHeader ? pollHeaderToEventHeader(pollHeader, dateLine) : dateLine;
+/** 1 日だけの確定: 投票メッセージをそのまま確定イベントの告知にする */
+async function confirmOne(
+  ctx: Context,
+  poll: PollRow,
+  candidate: CandidateRow,
+  pollHeader: string | undefined,
+  whenOf: (c: CandidateRow) => string,
+  headerOf: (c: CandidateRow) => string,
+): Promise<MessageBody> {
+  const eventIds = await confirmPoll(ctx.env.DB, poll, [{ candidate, messageId: poll.message_id }], ctx.now);
+  if (eventIds === null) return { content: "この日程調整はすでに確定または中止されています。", components: [] };
+  const event = (await getEvent(ctx.env.DB, eventIds[0]!))!;
 
   let note = "";
   if (event.message_id && pollHeader !== undefined) {
     const responses = await listResponses(ctx.env.DB, event.id);
     await discordRequest(ctx.env, "PATCH", `/channels/${event.channel_id}/messages/${event.message_id}`, {
-      body: buildAnnouncement(event, header, responses),
+      body: buildAnnouncement(event, headerOf(candidate), responses),
     });
   } else {
     note = "\n（投票メッセージが見つからなかったため、告知メッセージは更新していません。）";
   }
+  return { content: `✅ 「${poll.title}」を ${whenOf(candidate)} で確定しました。${note}`, embeds: [], components: [] };
+}
+
+/**
+ * 複数日の確定: 日程ごとに告知メッセージを投稿し、投票メッセージは確定した日程の一覧にする。
+ * 告知はイベントを作る前に（ボタンなしで）投稿しておく。投稿できなければ日程調整はそのまま残す。
+ */
+async function confirmMany(
+  ctx: Context,
+  poll: PollRow,
+  chosen: CandidateRow[],
+  pollHeader: string | undefined,
+  whenOf: (c: CandidateRow) => string,
+  headerOf: (c: CandidateRow) => string,
+): Promise<MessageBody> {
+  const draft = (c: CandidateRow): EventRow => ({
+    id: 0,
+    guild_id: poll.guild_id,
+    channel_id: poll.channel_id,
+    message_id: null,
+    title: poll.title,
+    start_at: c.start_at,
+    duration_minutes: poll.duration_minutes,
+    state: "scheduled",
+  });
+  const messagePath = (id: string) => `/channels/${poll.channel_id}/messages/${id}`;
+  const removePosted = (ids: string[]) =>
+    Promise.all(ids.map((id) => discordRequest(ctx.env, "DELETE", messagePath(id)).catch(() => undefined)));
+
+  const posted: string[] = [];
+  try {
+    for (const c of chosen) {
+      const message = await discordRequest<APIMessage>(ctx.env, "POST", `/channels/${poll.channel_id}/messages`, {
+        body: { ...buildAnnouncement(draft(c), headerOf(c), []), components: [] },
+      });
+      posted.push(message.id);
+    }
+  } catch (err) {
+    await removePosted(posted);
+    if (
+      isDiscordError(err, DiscordErrorCode.MissingAccess, DiscordErrorCode.MissingPermissions, DiscordErrorCode.UnknownChannel)
+    ) {
+      return { content: `${cannotPostMessage(poll.channel_id)}\n日程調整は確定せずに残しています。`, components: [] };
+    }
+    throw err;
+  }
+
+  const picks = chosen.map((candidate, i) => ({ candidate, messageId: posted[i]! }));
+  const eventIds = await confirmPoll(ctx.env.DB, poll, picks, ctx.now);
+  if (eventIds === null) {
+    await removePosted(posted);
+    return { content: "この日程調整はすでに確定または中止されています。", components: [] };
+  }
+
+  // 告知に、確定イベントの回答とボタンを入れる
+  const lines: string[] = [];
+  for (const [i, c] of chosen.entries()) {
+    const event = (await getEvent(ctx.env.DB, eventIds[i]!))!;
+    const responses = await listResponses(ctx.env.DB, event.id);
+    await discordRequest(ctx.env, "PATCH", messagePath(posted[i]!), {
+      body: buildAnnouncement(event, headerOf(c), responses),
+    });
+    lines.push(`・[${whenOf(c)}](${messageLink(poll.guild_id, poll.channel_id, posted[i]!)})`);
+  }
+
+  let note = "";
+  if (poll.message_id && pollHeader !== undefined) {
+    await discordRequest(ctx.env, "PATCH", messagePath(poll.message_id), {
+      body: buildConfirmedPollMessage(poll, pollHeader, lines),
+    });
+  } else {
+    note = "\n（投票メッセージが見つからなかったため、投票メッセージは更新していません。）";
+  }
   return {
-    content: `✅ 「${poll.title}」を ${when} で確定しました。${note}`,
+    content: `✅ 「${poll.title}」を ${chosen.length} 日程で確定し、日程ごとに告知を投稿しました。\n${lines.join("\n")}${note}`,
     embeds: [],
     components: [],
   };

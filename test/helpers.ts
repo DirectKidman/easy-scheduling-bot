@@ -208,6 +208,10 @@ export class FakeDiscord {
         Object.assign(msg, body);
         return ok(msg);
       }
+      if (method === "DELETE") {
+        this.messages.delete(m[2]!);
+        return new Response(null, { status: 204 });
+      }
     }
     if ((m = /^\/guilds\/(\d+)$/.exec(path)) && method === "GET") {
       const name = this.guilds.get(m[1]!);
