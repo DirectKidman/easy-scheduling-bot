@@ -24,6 +24,7 @@ import {
   listOpenPollVotesForUser,
 } from "../db/polls";
 import { defer, ephemeralMessage, logError, type Context, type MessageBody } from "../interaction";
+import { formatDateTime } from "../time";
 import { refreshPollMessage } from "./poll";
 import { escapeMarkdown, messageLink, STATUS_META } from "../render";
 
@@ -116,10 +117,13 @@ async function confirmAll(ctx: Context, userId: string): Promise<APIInteractionR
     return messageId ? `[${t}](${messageLink(guildId, channelId, messageId)})` : t;
   };
   const lines = future.map(
-    (e) => `・<t:${e.start_at}:f>　${link(e.title, e.guild_id, e.channel_id, e.message_id)}　${STATUS_META[e.status].emoji}`,
+    (e) =>
+      `・${formatDateTime(e.start_at, e.timezone, ctx.now)}　${link(e.title, e.guild_id, e.channel_id, e.message_id)}　${STATUS_META[e.status].emoji}`,
   );
   for (const v of votes) {
-    lines.push(`・<t:${v.start_at}:f>　${link(v.title, v.guild_id, v.channel_id, v.message_id)}（日程調整）　${VOTE_MARK[v.value]}`);
+    lines.push(
+      `・${formatDateTime(v.start_at, v.timezone, ctx.now)}　${link(v.title, v.guild_id, v.channel_id, v.message_id)}（日程調整）　${VOTE_MARK[v.value]}`,
+    );
   }
   const total = lines.length;
   const listed = lines.slice(0, MAX_LISTED);

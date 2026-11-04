@@ -1,5 +1,5 @@
 import type { APIMessage } from "discord-api-types/v10";
-import { listResponses, transitionEventState, type EventRow } from "./db/queries";
+import { getServerOrDefault, listResponses, transitionEventState, type EventRow } from "./db/queries";
 import { DiscordErrorCode, discordRequest, isDiscordError } from "./discord/rest";
 import type { Env } from "./env";
 import { buildAnnouncement, fallbackHeader } from "./render";
@@ -16,7 +16,9 @@ export async function refreshAnnouncement(env: Env, event: EventRow): Promise<Re
   const path = `/channels/${event.channel_id}/messages/${event.message_id}`;
   try {
     const message = await discordRequest<APIMessage>(env, "GET", path);
-    const header = message.embeds[0]?.description ?? fallbackHeader(event);
+    const header =
+      message.embeds[0]?.description ??
+      fallbackHeader(event, (await getServerOrDefault(env.DB, event.guild_id)).timezone);
     const responses = await listResponses(env.DB, event.id);
     await discordRequest(env, "PATCH", path, { body: buildAnnouncement(event, header, responses) });
     return "updated";

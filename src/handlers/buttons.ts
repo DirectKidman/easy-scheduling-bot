@@ -9,6 +9,7 @@ import { refreshAnnouncement } from "../announcement";
 import {
   getEvent,
   getServer,
+  getServerOrDefault,
   listResponses,
   transitionEventState,
   upsertResponse,
@@ -70,7 +71,9 @@ async function handleRsvp(
 
   await upsertResponse(ctx.env.DB, event.id, interaction.member.user.id, status as RsvpStatus, ctx.now);
   const responses = await listResponses(ctx.env.DB, event.id);
-  const header = interaction.message.embeds[0]?.description ?? fallbackHeader(event);
+  const header =
+    interaction.message.embeds[0]?.description ??
+    fallbackHeader(event, (await getServerOrDefault(ctx.env.DB, event.guild_id)).timezone);
 
   if (status === "going" || status === "maybe") {
     ctx.exec.waitUntil(warnConflicts(ctx, interaction, event));

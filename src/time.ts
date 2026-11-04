@@ -155,11 +155,54 @@ export function parseDuration(input: string | undefined): { ok: true; minutes: n
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
-/** 「10/11(土) 19:00」形式。セレクトメニューのラベルなど、Discord のタイムスタンプ記法が使えない場所用 */
-export function formatLocalShort(unix: number, tz: string): string {
+// ---- 表示用の整形 ----
+// Discord のタイムスタンプ記法（<t:…>）は、スマホの通知や一部の表示で崩れたり記法のまま出たりするので使わない。
+// 送信する時点で、サーバーのタイムゾーンで文字列にしておく。
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+function weekday(p: { year: number; month: number; day: number }): string {
+  return WEEKDAYS[new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay()]!;
+}
+
+/** 「11/12(水)」。now と年が違えば「2027/1/5(火)」 */
+export function formatDate(unix: number, tz: string, now?: number): string {
   const p = toLocalParts(unix * 1000, tz);
-  const wd = WEEKDAYS[new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay()];
-  return `${p.month}/${p.day}(${wd}) ${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
+  const year = now !== undefined && toLocalParts(now * 1000, tz).year !== p.year ? `${p.year}/` : "";
+  return `${year}${p.month}/${p.day}(${weekday(p)})`;
+}
+
+/** 「19:00」 */
+export function formatTime(unix: number, tz: string): string {
+  const p = toLocalParts(unix * 1000, tz);
+  return `${pad2(p.hour)}:${pad2(p.minute)}`;
+}
+
+/** 「11/12(水) 19:00」 */
+export function formatDateTime(unix: number, tz: string, now?: number): string {
+  return `${formatDate(unix, tz, now)} ${formatTime(unix, tz)}`;
+}
+
+/** 「11/12(水) 19:00〜21:00」。日付をまたぐなら「11/12(水) 22:00〜11/13(木) 02:00」 */
+export function formatRange(startAt: number, durationMinutes: number, tz: string, now?: number): string {
+  const end = startAt + durationMinutes * 60;
+  const sameDay = formatDate(startAt, tz) === formatDate(end, tz);
+  const endText = sameDay ? formatTime(end, tz) : formatDateTime(end, tz, now);
+  return `${formatDateTime(startAt, tz, now)}〜${endText}${timezoneNote(tz)}`;
+}
+
+/** 日本時間以外のサーバーでは、どのタイムゾーンの時刻かを添える */
+export function timezoneNote(tz: string): string {
+  return tz === "Asia/Tokyo" ? "" : `（${tz}）`;
+}
+
+/** 表の日付列: 幅をそろえた「11/12(水)19:00」（1 桁の月日は前を空白で埋める） */
+export function formatTableDate(unix: number, tz: string): string {
+  const p = toLocalParts(unix * 1000, tz);
+  const md = `${String(p.month).padStart(2, " ")}/${String(p.day).padStart(2, " ")}`;
+  return `${md}(${weekday(p)})${pad2(p.hour)}:${pad2(p.minute)}`;
 }
 
 export const MAX_CANDIDATES = 20;

@@ -4,6 +4,7 @@ import { listOpenPollVotesForUser, type UserPollVote } from "../db/polls";
 import { listUpcomingForUser } from "../db/queries";
 import { defer, type Context } from "../interaction";
 import { escapeMarkdown, messageLink, STATUS_META } from "../render";
+import { formatDateTime } from "../time";
 
 /** 一度に表示する最大件数 */
 const MAX_ITEMS = 20;
@@ -37,7 +38,7 @@ export function handleMy(
     if (shown.length > 0) {
       const lines = shown.map(
         (r) =>
-          `${serverLabel(r.guild_id)}　<t:${r.start_at}:f>　${linked(r.title, r.guild_id, r.channel_id, r.message_id)}　${STATUS_META[r.status].emoji}`,
+          `${serverLabel(r.guild_id)}　${formatDateTime(r.start_at, r.timezone, ctx.now)}　${linked(r.title, r.guild_id, r.channel_id, r.message_id)}　${STATUS_META[r.status].emoji}`,
       );
       if (rows.length > shown.length) lines.push(`…ほか ${rows.length - shown.length} 件`);
       embeds.push({
@@ -48,13 +49,13 @@ export function handleMy(
     }
     if (polls.length > 0) {
       const lines = polls.map((p) => {
-        const marks = p.votes.map((v) => `<t:${v.start_at}:f> ${VOTE_MARK[v.value]}`).join("、");
+        const marks = p.votes.map((v) => `${formatDateTime(v.start_at, v.timezone, ctx.now)} ${VOTE_MARK[v.value]}`).join("、");
         return `${serverLabel(p.guild_id)}　${linked(p.title, p.guild_id, p.channel_id, p.message_id)}\n　${marks}`;
       });
       embeds.push({
         title: "🗳️ 回答中の日程調整",
         description: lines.join("\n"),
-        footer: { text: "⭕・🔺 を付けた今後の候補日を表示しています" },
+        footer: { text: "回答した今後の候補日を表示しています（〇 参加できる　△ たぶん　× 参加できない）" },
       });
     }
     return { embeds };

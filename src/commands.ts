@@ -2,7 +2,6 @@ import {
   ApplicationCommandOptionType,
   ApplicationCommandType,
   ApplicationIntegrationType,
-  ChannelType,
   InteractionContextType,
   PermissionFlagsBits,
   type RESTPutAPIApplicationCommandsJSONBody,
@@ -20,20 +19,19 @@ export const COMMANDS: RESTPutAPIApplicationCommandsJSONBody = [
   {
     ...guildOnly,
     name: "setup",
-    description: "告知チャンネル・運営ロール・タイムゾーンを設定します（サーバー管理権限が必要）",
+    description: "運営ロール・タイムゾーン・リマインドの送り方を設定します（サーバー管理権限が必要）",
     default_member_permissions: String(PermissionFlagsBits.ManageGuild),
     options: [
       {
-        type: ApplicationCommandOptionType.Channel,
-        name: "channel",
-        description: "イベントを告知するチャンネル",
-        channel_types: [ChannelType.GuildText, ChannelType.GuildAnnouncement],
-        required: true,
-      },
-      {
         type: ApplicationCommandOptionType.Role,
         name: "operator_role",
-        description: "イベントを作成・中止できる運営ロール（省略時はサーバー管理権限を持つ人のみ）",
+        description: "イベントを作成・中止できる運営ロール（未設定ならサーバー管理権限を持つ人のみ）",
+        required: false,
+      },
+      {
+        type: ApplicationCommandOptionType.Boolean,
+        name: "clear_operator_role",
+        description: "運営ロールの設定を外す（サーバー管理権限を持つ人だけが運営者になる）",
         required: false,
       },
       {
@@ -49,8 +47,8 @@ export const COMMANDS: RESTPutAPIApplicationCommandsJSONBody = [
         description: "リマインドの送り方（省略時は現在の設定、初回はチャンネル）",
         required: false,
         choices: [
-          { name: "告知チャンネルでメンション", value: "channel" },
-          { name: "DM（届かない人は告知チャンネルでメンション）", value: "dm" },
+          { name: "告知したチャンネルでメンション", value: "channel" },
+          { name: "DM（届かない人は告知したチャンネルでメンション）", value: "dm" },
         ],
       },
     ],
@@ -58,12 +56,12 @@ export const COMMANDS: RESTPutAPIApplicationCommandsJSONBody = [
   {
     ...guildOnly,
     name: "event",
-    description: "イベントを作成して告知します（運営者のみ）",
+    description: "イベントを作成し、このチャンネルに告知します（運営者のみ）",
   },
   {
     ...guildOnly,
     name: "poll",
-    description: "候補日を並べて日程調整します（運営者のみ）",
+    description: "候補日を並べて、このチャンネルで日程調整します（運営者のみ）",
   },
   {
     ...guildOnly,
