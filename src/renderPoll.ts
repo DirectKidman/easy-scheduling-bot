@@ -340,6 +340,63 @@ export function buildVotePanel(opts: {
   };
 }
 
+/**
+ * 回答パネルのボタンが押されたとき、DB を待たずにすぐ返すための見た目の更新。
+ * 押されたメッセージ（今のパネル）のうち、その行のボタンの色と、上の一覧の「あなた: 」の記号だけを書き換える。
+ * 今と同じ記号なら取り消し（null）。パネルが想定した形でなければ null を返す（呼び出し側は DB から作り直す）。
+ */
+export function applyVoteToPanel(
+  message: { embeds?: APIEmbed[]; components?: unknown[] },
+  customId: string,
+): { value: VoteValue | null; body: { embeds: APIEmbed[]; components: APIActionRowComponent<APIComponentInMessageActionRow>[] } } | null {
+  const [, , , , pressed, pageText] = customId.split(":");
+  if (!VOTE_VALUES.includes(pressed as VoteValue)) return null;
+  const rows = (message.components ?? []) as APIActionRowComponent<APIButtonComponentWithCustomId>[];
+  const hasPrefix = (row: APIActionRowComponent<APIButtonComponentWithCustomId>, prefix: string) =>
+    row.type === ComponentType.ActionRow && row.components.some((c) => c.custom_id?.startsWith(prefix));
+  const voteRows = rows.filter((row) => hasPrefix(row, "poll:v:"));
+  const rowIndex = voteRows.findIndex((row) => row.components.some((c) => c.custom_id === customId));
+  if (rowIndex < 0) return null;
+
+  const voteOf = (c: APIButtonComponentWithCustomId) => c.custom_id.split(":")[4] as VoteValue;
+  const current = voteRows[rowIndex]!.components.find(
+    (c) => c.custom_id.startsWith("poll:v:") && c.style !== ButtonStyle.Secondary,
+  );
+  const value = current && voteOf(current) === pressed ? null : (pressed as VoteValue);
+
+  // 上の一覧で、押された候補日の行を探す（終了した候補日と重なりの行を除いた、受付中の候補日の並び）
+  const embed = message.embeds?.[0];
+  if (!embed?.description) return null;
+  const lines = embed.description.split("\n");
+  const openLines = lines
+    .map((line, i) => ({ line, i }))
+    .filter(({ line }) => !line.startsWith("　└") && !line.endsWith("（終了）"));
+  const paged = rows.some((row) => hasPrefix(row, "poll:page:"));
+  const target = openLines[(paged ? (Number(pageText) || 0) * ROWS_PER_PAGE : 0) + rowIndex];
+  if (!target || !/あなた: \S+$/.test(target.line)) return null;
+  lines[target.i] = target.line.replace(/あなた: \S+$/, `あなた: ${value ? VOTE_MARK[value] : NO_VOTE_MARK}`);
+
+  const components = rows.map((row) =>
+    row.components.some((c) => c.custom_id === customId)
+      ? {
+          ...row,
+          components: row.components.map((c) =>
+            c.custom_id.startsWith("poll:v:")
+              ? { ...c, style: voteOf(c) === value ? SELECTED_STYLE[value] : ButtonStyle.Secondary }
+              : c,
+          ),
+        }
+      : row,
+  );
+  return {
+    value,
+    body: {
+      embeds: [{ title: embed.title, description: lines.join("\n"), footer: embed.footer && { text: embed.footer.text } }],
+      components: components as APIActionRowComponent<APIComponentInMessageActionRow>[],
+    },
+  };
+}
+
 // ---- 詳細（全員の回答と、運営者の操作） ----
 
 export function buildPollDetail(opts: {
