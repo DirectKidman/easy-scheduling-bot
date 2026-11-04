@@ -199,9 +199,11 @@ describe("/event", () => {
   it("過去の日時は拒否する", async () => {
     await seedServer();
     const res = await interact(modal("event:create", { title: "x", datetime: "2000-01-01 10:00" }, admin));
-    expect(res.data.content).toContain("過去");
-    const far = await interact(modal("event:create", { title: "x", datetime: "2099-01-01 10:00" }, admin));
-    expect(far.data.content).toContain("2年以上先");
+    // モーダルはすぐ閉じ、確認の結果は「処理中」の応答を書き換えて出す
+    expect(res.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource);
+    expect(discord.followups().at(-1).content).toContain("過去");
+    await interact(modal("event:create", { title: "x", datetime: "2099-01-01 10:00" }, admin));
+    expect(discord.followups().at(-1).content).toContain("2年以上先");
   });
 
   it("投稿できなければイベントを残さずに理由を返す", async () => {
@@ -312,8 +314,11 @@ describe("回答ボタン", () => {
     expect(edited.components).toEqual([]);
     expect(discord.followups()[0].content).toContain("中止しました");
 
+    const before = await env.DB.prepare("SELECT COUNT(*) AS n FROM responses").first("n");
     const again = await interact(button(`rsvp:${id}:going`, message));
     expect(again.data.content).toContain("受付を終了");
+    // 中止後の回答は保存しない（確認と保存を 1 回の batch で行っている）
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM responses").first("n")).toBe(before);
   });
 });
 

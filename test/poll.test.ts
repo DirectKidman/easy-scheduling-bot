@@ -139,14 +139,15 @@ describe("/poll の作成", () => {
     const res = await interact(
       modal("poll:create", { title: "x", candidates: `${NEXT_YEAR}-10-11 19:00\nあさって` }, admin),
     );
-    expect(res.data.content).toContain("2 行目「あさって」");
+    expect(res.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource);
+    expect(discord.followups().at(-1).content).toContain("2 行目「あさって」");
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM polls").first("n")).toBe(0);
   });
 
   it("候補日が 1 つだけなら拒否する", async () => {
     await seedServer();
-    const res = await interact(modal("poll:create", { title: "x", candidates: `${NEXT_YEAR}-10-11 19:00` }, admin));
-    expect(res.data.content).toContain("2 つ以上");
+    await interact(modal("poll:create", { title: "x", candidates: `${NEXT_YEAR}-10-11 19:00` }, admin));
+    expect(discord.followups().at(-1).content).toContain("2 つ以上");
   });
 });
 
@@ -510,8 +511,8 @@ describe("回答パネル（日付ごとの ⭕🔺❌ ボタンと、予定の�
   it("他サーバーの日程調整には回答できない", async () => {
     await seedServer();
     const { pollId, candidateIds } = await seedPoll({ starts: [nowSec() + DAY, nowSec() + 2 * DAY] });
-    const res = await interact(button(`poll:vote:${pollId}`, {}, { guildId: "999" }));
-    expect(res.data.content).toContain("見つかりません");
+    await interact(button(`poll:vote:${pollId}`, {}, { guildId: "999" }));
+    expect(discord.followups().at(-1).content).toContain("見つかりません");
     const vote = await interact(button(`poll:v:${pollId}:${candidateIds[0]}:yes:0`, {}, { guildId: "999" }));
     expect(vote.data.content).toContain("見つかりません");
     expect(await votesOf(MEMBER_ID)).toEqual([]);
@@ -707,8 +708,8 @@ describe("確定・中止", () => {
     const msg = discord.messages.get(messageId)!;
     expect(msg.embeds[0]!.title).toBe("【中止】🗳️ ボドゲ会（日程調整）");
     expect(msg.components).toEqual([]);
-    const again = await interact(button(`poll:vote:${pollId}`));
-    expect(again.data.content).toContain("受付を終了");
+    await interact(button(`poll:vote:${pollId}`));
+    expect(discord.followups().at(-1).content).toContain("受付を終了");
   });
 });
 
@@ -811,6 +812,6 @@ describe("/event の所要時間", () => {
     const res = await interact(
       modal("event:create", { title: "x", datetime: `${NEXT_YEAR}-10-11 19:00`, duration: "ながめ" }, admin),
     );
-    expect(res.data.content).toContain("所要時間");
+    expect(discord.followups().at(-1).content).toContain("所要時間");
   });
 });

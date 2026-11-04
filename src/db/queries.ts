@@ -82,15 +82,19 @@ export async function upsertServer(
 
 /** イベント・日程調整を作る前に、サーバーの行がなければ既定値で作る（外部キーのため） */
 export async function ensureServer(db: D1Database, guildId: string, channelId: string): Promise<void> {
+  await ensureServerStatement(db, guildId, channelId).run();
+}
+
+/** ensureServer の文。イベント・日程調整の作成と同じ batch で実行し、DB との往復を 1 回にするため */
+export function ensureServerStatement(db: D1Database, guildId: string, channelId: string): D1PreparedStatement {
   const d = defaultServer(guildId);
-  await db
+  return db
     .prepare(
       `INSERT INTO servers (guild_id, announce_channel_id, operator_role_id, timezone, reminder_mode)
        VALUES (?1, ?2, NULL, ?3, ?4)
        ON CONFLICT (guild_id) DO NOTHING`,
     )
-    .bind(guildId, channelId, d.timezone, d.reminder_mode)
-    .run();
+    .bind(guildId, channelId, d.timezone, d.reminder_mode);
 }
 
 /** bot 外しの確認対象: 最後に確認してから時間が経った順 */
@@ -138,17 +142,21 @@ export function getEvent(db: D1Database, id: number): Promise<EventRow | null> {
   return db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE id = ?1`).bind(id).first<EventRow>();
 }
 
+/** イベントを作る。サーバーの行がなければ既定値で作る（同じ batch で、往復 1 回） */
 export async function insertEvent(
   db: D1Database,
   e: Pick<EventRow, "guild_id" | "channel_id" | "title" | "start_at" | "duration_minutes">,
 ): Promise<number> {
-  const row = await db
-    .prepare(
-      `INSERT INTO events (guild_id, channel_id, title, start_at, duration_minutes)
-       VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id`,
-    )
-    .bind(e.guild_id, e.channel_id, e.title, e.start_at, e.duration_minutes)
-    .first<{ id: number }>();
+  const [, inserted] = await db.batch<{ id: number }>([
+    ensureServerStatement(db, e.guild_id, e.channel_id),
+    db
+      .prepare(
+        `INSERT INTO events (guild_id, channel_id, title, start_at, duration_minutes)
+         VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id`,
+      )
+      .bind(e.guild_id, e.channel_id, e.title, e.start_at, e.duration_minutes),
+  ]);
+  const row = inserted?.results[0];
   if (!row) throw new Error("insertEvent returned no row");
   return row.id;
 }
@@ -274,6 +282,39 @@ export async function upsertResponse(
     )
     .bind(eventId, userId, status, now)
     .run();
+}
+
+/**
+ * 告知のボタンでの回答: 保存・イベントの読み込み・名簿の読み込みを 1 つの batch で行う（DB との往復 1 回）。
+ * 保存は、イベントがこのサーバーのもので、予定どおり（中止されていない）かつ開始前のときだけ行う。
+ * 保存したかどうかは、返したイベントを同じ条件で見て判断する（同じトランザクションなので食い違わない）。
+ */
+export async function respondAndList(
+  db: D1Database,
+  r: { eventId: number; guildId: string; userId: string; status: RsvpStatus; now: number },
+): Promise<{ event: EventRow | null; responses: ResponseRow[] }> {
+  const [, event, responses] = await db.batch([
+    db
+      .prepare(
+        `INSERT INTO responses (event_id, user_id, status, updated_at)
+         SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (
+           SELECT 1 FROM events WHERE id = ?1 AND guild_id = ?5 AND state = 'scheduled' AND start_at > ?4
+         )
+         ON CONFLICT (event_id, user_id) DO UPDATE SET
+           status = excluded.status,
+           updated_at = CASE WHEN responses.status = excluded.status
+                             THEN responses.updated_at ELSE excluded.updated_at END`,
+      )
+      .bind(r.eventId, r.userId, r.status, r.now, r.guildId),
+    db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE id = ?1`).bind(r.eventId),
+    db
+      .prepare(`SELECT user_id, status, updated_at FROM responses WHERE event_id = ?1 ORDER BY updated_at, user_id`)
+      .bind(r.eventId),
+  ]);
+  return {
+    event: (event!.results[0] as EventRow | undefined) ?? null,
+    responses: responses!.results as ResponseRow[],
+  };
 }
 
 /** 回答を、回答した順（最初に今の状態にした時刻順）で返す */

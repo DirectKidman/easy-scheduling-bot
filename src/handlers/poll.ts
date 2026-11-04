@@ -22,10 +22,10 @@ import {
   transitionPollState,
   type CandidateRow,
   type PollRow,
+  type VoteRow,
   type VoteValue,
 } from "../db/polls";
 import {
-  ensureServer,
   getEvent,
   getServerOrDefault,
   listResponses,
@@ -106,55 +106,57 @@ export async function handlePollCommand(
   } as APIInteractionResponse;
 }
 
-export async function handlePollModal(
+export function handlePollModal(
   ctx: Context,
   interaction: APIModalSubmitGuildInteraction,
-): Promise<APIInteractionResponse> {
+): APIInteractionResponse {
+  // モーダルはすぐ閉じ（「処理中」を返す）、サーバー設定の読み込み・確認・作成は応答の後に行う
+  return defer(ctx, interaction.token, "message", () => createPoll(ctx, interaction));
+}
+
+async function createPoll(ctx: Context, interaction: APIModalSubmitGuildInteraction): Promise<MessageBody> {
   const server = await getServerOrDefault(ctx.env.DB, interaction.guild_id);
-  if (!isOperator(interaction.member, server)) return ephemeral(NOT_OPERATOR);
+  if (!isOperator(interaction.member, server)) return { content: NOT_OPERATOR };
   // 告知はコマンドを実行したチャンネルに出す（秘匿チャンネルで実行すれば、そのチャンネルの人にだけ届く）
   const channelId = interactionChannelId(interaction);
-  if (!channelId) return ephemeral("チャンネルの中で実行してください。");
+  if (!channelId) return { content: "チャンネルの中で実行してください。" };
 
   const title = getModalValue(interaction, "title")?.trim() ?? "";
-  if (!title) return ephemeral("タイトルを入力してください。");
+  if (!title) return { content: "タイトルを入力してください。" };
   const candidates = parseCandidates(getModalValue(interaction, "candidates") ?? "", server.timezone, ctx.now * 1000);
-  if (!candidates.ok) return ephemeral(`⚠️ ${candidates.reason}`);
+  if (!candidates.ok) return { content: `⚠️ ${candidates.reason}` };
   if (candidates.unix.some((u) => u > ctx.now + MAX_AHEAD_SECONDS)) {
-    return ephemeral("⚠️ 2年以上先の候補日は指定できません。");
+    return { content: "⚠️ 2年以上先の候補日は指定できません。" };
   }
-  if (candidates.unix.length < 2) return ephemeral("⚠️ 重複を除くと候補日が 1 つしかありません。");
+  if (candidates.unix.length < 2) return { content: "⚠️ 重複を除くと候補日が 1 つしかありません。" };
   const duration = parseDuration(getModalValue(interaction, "duration"));
-  if (!duration.ok) return ephemeral(`⚠️ ${duration.reason}`);
+  if (!duration.ok) return { content: `⚠️ ${duration.reason}` };
   const location = getModalValue(interaction, "location")?.trim() || undefined;
   const description = getModalValue(interaction, "description")?.trim() || undefined;
   const hostId = interaction.member.user.id;
 
-  return defer(ctx, interaction.token, "message", async () => {
-    await ensureServer(ctx.env.DB, server.guild_id, channelId);
-    const { poll, candidates: rows } = await insertPoll(
-      ctx.env.DB,
-      { guild_id: server.guild_id, channel_id: channelId, title, duration_minutes: duration.minutes },
-      candidates.unix,
-    );
-    const header = buildPollHeader({ durationMinutes: duration.minutes, location, hostId, description });
-    let message: APIMessage;
-    try {
-      message = await discordRequest<APIMessage>(ctx.env, "POST", `/channels/${poll.channel_id}/messages`, {
-        body: buildPollMessage(poll, header, rows, [], server.timezone, ctx.now),
-      });
-    } catch (err) {
-      await deletePoll(ctx.env.DB, poll.id);
-      if (
-        isDiscordError(err, DiscordErrorCode.MissingAccess, DiscordErrorCode.MissingPermissions, DiscordErrorCode.UnknownChannel)
-      ) {
-        return { content: cannotPostMessage(poll.channel_id) };
-      }
-      throw err;
+  const { poll, candidates: rows } = await insertPoll(
+    ctx.env.DB,
+    { guild_id: server.guild_id, channel_id: channelId, title, duration_minutes: duration.minutes },
+    candidates.unix,
+  );
+  const header = buildPollHeader({ durationMinutes: duration.minutes, location, hostId, description });
+  let message: APIMessage;
+  try {
+    message = await discordRequest<APIMessage>(ctx.env, "POST", `/channels/${poll.channel_id}/messages`, {
+      body: buildPollMessage(poll, header, rows, [], server.timezone, ctx.now),
+    });
+  } catch (err) {
+    await deletePoll(ctx.env.DB, poll.id);
+    if (
+      isDiscordError(err, DiscordErrorCode.MissingAccess, DiscordErrorCode.MissingPermissions, DiscordErrorCode.UnknownChannel)
+    ) {
+      return { content: cannotPostMessage(poll.channel_id) };
     }
-    await setPollMessage(ctx.env.DB, poll.id, message.id);
-    return { content: `✅ 日程調整を投稿しました: ${messageLink(poll.guild_id, poll.channel_id, message.id)}` };
-  });
+    throw err;
+  }
+  await setPollMessage(ctx.env.DB, poll.id, message.id);
+  return { content: `✅ 日程調整を投稿しました: ${messageLink(poll.guild_id, poll.channel_id, message.id)}` };
 }
 
 // ---- ボタン・セレクトメニュー ----
@@ -189,18 +191,25 @@ export async function handlePollComponent(
     }
   }
 
-  const [poll, server] = await Promise.all([
+  // 回答パネルを開く・ページを送る: DB を待たずに「処理中」を返し、確認と読み込みは 1 回の往復でまとめて行う
+  if (action === "vote" || action === "page") {
+    const page = action === "page" ? Number(args[0]) || 0 : 0;
+    return defer(ctx, interaction.token, action === "vote" ? "message" : "update", () =>
+      openVotePanel(ctx, pollId, interaction.guild_id, userId, page),
+    );
+  }
+
+  // 日程調整・サーバー設定と、必要なら候補日・回答を並行して読む（往復 1 回）
+  const withVotes = action === "detail" || action === "pick";
+  const [poll, server, candidates, votes] = await Promise.all([
     getPoll(ctx.env.DB, pollId),
     getServerOrDefault(ctx.env.DB, interaction.guild_id),
+    withVotes ? listCandidates(ctx.env.DB, pollId) : [],
+    withVotes ? listVotes(ctx.env.DB, pollId) : [],
   ]);
   if (!poll || poll.guild_id !== interaction.guild_id) return ephemeral(GONE);
 
   switch (action) {
-    case "vote":
-      if (poll.state !== "open") return ephemeral("この日程調整は受付を終了しています。");
-      return defer(ctx, interaction.token, "message", () => votePanel(ctx, poll, server, userId, 0));
-    case "page":
-      return defer(ctx, interaction.token, "update", () => votePanel(ctx, poll, server, userId, Number(args[0]) || 0));
     case "v": {
       // パネルが想定した形でなかったとき: 従来どおり DB から作り直す
       if (poll.state !== "open") return ephemeral("この日程調整は受付を終了しています。");
@@ -210,7 +219,16 @@ export async function handlePollComponent(
       );
     }
     case "detail":
-      return pollDetail(ctx, poll, server, isOperator(interaction.member, server));
+      return ephemeralMessage(
+        buildPollDetail({
+          poll,
+          candidates,
+          votes,
+          timezone: server.timezone,
+          isOperator: isOperator(interaction.member, server),
+          now: ctx.now,
+        }),
+      );
     case "yes":
     case "maybe":
       // 以前のセレクトメニュー式の回答パネル（開いたままのもの）からの操作
@@ -223,7 +241,7 @@ export async function handlePollComponent(
   switch (action) {
     case "pick": {
       const values = "values" in interaction.data ? interaction.data.values : [];
-      return confirmPick(ctx, poll, server, values.map(Number));
+      return confirmPick(ctx, poll, server, candidates, votes, values.map(Number));
     }
     case "fix":
       return defer(ctx, interaction.token, "update", () =>
@@ -263,7 +281,37 @@ function update(body: MessageBody): APIInteractionResponse {
   };
 }
 
-/** 回答パネル: 本人の今の回答と、候補ごとの予定の重なりを出す */
+/** 予定の重なりを調べる範囲。候補日は 2 年先までで、所要時間は最長 7 日 */
+function busyWindow(now: number): [number, number] {
+  return [now - 7 * DAY_SECONDS, now + MAX_AHEAD_SECONDS + 7 * DAY_SECONDS];
+}
+const DAY_SECONDS = 24 * 60 * 60;
+
+/**
+ * 回答パネルを開く: 日程調整・サーバー設定・候補日・回答・本人の他の予定を並行して読む（DB との往復 1 回）。
+ * 予定の範囲は候補日を読む前に決める必要があるので、候補日になりうる範囲全体で読み、候補ごとに絞る。
+ */
+async function openVotePanel(
+  ctx: Context,
+  pollId: number,
+  guildId: string,
+  userId: string,
+  page: number,
+): Promise<MessageBody> {
+  const [from, to] = busyWindow(ctx.now);
+  const [poll, server, candidates, votes, busy] = await Promise.all([
+    getPoll(ctx.env.DB, pollId),
+    getServerOrDefault(ctx.env.DB, guildId),
+    listCandidates(ctx.env.DB, pollId),
+    listVotes(ctx.env.DB, pollId),
+    collectBusy(ctx.env, userId, from, to, { pollId }),
+  ]);
+  if (!poll || poll.guild_id !== guildId) return { content: GONE, embeds: [], components: [] };
+  if (poll.state !== "open") return { content: "この日程調整は受付を終了しています。", embeds: [], components: [] };
+  return buildPanel(ctx, poll, server, userId, page, candidates, votes, busy);
+}
+
+/** 回答パネル: 本人の今の回答と、候補ごとの予定の重なりを出す（日程調整は確認済みのもの） */
 async function votePanel(
   ctx: Context,
   poll: PollRow,
@@ -271,23 +319,32 @@ async function votePanel(
   userId: string,
   page: number,
 ): Promise<MessageBody> {
-  const [candidates, votes] = await Promise.all([listCandidates(ctx.env.DB, poll.id), listVotes(ctx.env.DB, poll.id)]);
+  const [from, to] = busyWindow(ctx.now);
+  const [candidates, votes, busy] = await Promise.all([
+    listCandidates(ctx.env.DB, poll.id),
+    listVotes(ctx.env.DB, poll.id),
+    collectBusy(ctx.env, userId, from, to, { pollId: poll.id }),
+  ]);
+  return buildPanel(ctx, poll, server, userId, page, candidates, votes, busy);
+}
+
+async function buildPanel(
+  ctx: Context,
+  poll: PollRow,
+  server: ServerRow,
+  userId: string,
+  page: number,
+  candidates: CandidateRow[],
+  votes: VoteRow[],
+  busy: Busy[],
+): Promise<MessageBody> {
   const myVotes = new Map<number, VoteValue>(
     votes.filter((v) => v.user_id === userId).map((v) => [v.candidate_id, v.value]),
   );
-
-  const conflicts = new Map<number, Busy[]>();
-  const ranges = candidates.map((c) => ({ id: c.id, start: c.start_at, end: c.start_at + poll.duration_minutes * 60 }));
-  if (ranges.length > 0) {
-    const busy = await collectBusy(
-      ctx.env,
-      userId,
-      Math.min(...ranges.map((r) => r.start)),
-      Math.max(...ranges.map((r) => r.end)),
-      { pollId: poll.id },
-    );
-    for (const r of ranges) conflicts.set(r.id, overlapping(busy, r));
-  }
+  const conflicts = new Map<number, Busy[]>(
+    candidates.map((c) => [c.id, overlapping(busy, { start: c.start_at, end: c.start_at + poll.duration_minutes * 60 })]),
+  );
+  // サーバー名は、重なった予定があるときだけ取りに行く
   const guildNames = await fetchGuildNames(
     ctx.env,
     [...conflicts.values()].flat().map((b) => b.guild_id),
@@ -365,18 +422,6 @@ async function persistVote(
   }
 }
 
-async function pollDetail(
-  ctx: Context,
-  poll: PollRow,
-  server: ServerRow,
-  operator: boolean,
-): Promise<APIInteractionResponse> {
-  const [candidates, votes] = await Promise.all([listCandidates(ctx.env.DB, poll.id), listVotes(ctx.env.DB, poll.id)]);
-  return ephemeralMessage(
-    buildPollDetail({ poll, candidates, votes, timezone: server.timezone, isOperator: operator, now: ctx.now }),
-  );
-}
-
 /** 選んだ候補のうち、まだ始まっていないものを日時順に。選べないものが混ざっていれば null */
 function pickedCandidates(candidates: CandidateRow[], picked: (c: CandidateRow) => boolean, count: number, now: number) {
   const chosen = candidates.filter(picked);
@@ -384,13 +429,14 @@ function pickedCandidates(candidates: CandidateRow[], picked: (c: CandidateRow) 
   return chosen;
 }
 
-async function confirmPick(
+function confirmPick(
   ctx: Context,
   poll: PollRow,
   server: ServerRow,
+  candidates: CandidateRow[],
+  votes: VoteRow[],
   candidateIds: number[],
-): Promise<APIInteractionResponse> {
-  const [candidates, votes] = await Promise.all([listCandidates(ctx.env.DB, poll.id), listVotes(ctx.env.DB, poll.id)]);
+): APIInteractionResponse {
   const ids = new Set(candidateIds);
   const chosen = pickedCandidates(candidates, (c) => ids.has(c.id), ids.size, ctx.now);
   if (!chosen) return update({ content: "その候補日は選べません。" });

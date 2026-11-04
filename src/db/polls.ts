@@ -1,3 +1,5 @@
+import { ensureServerStatement } from "./queries";
+
 export type PollState = "open" | "cancelled" | "message_deleted";
 /** yes = ⭕（参加できる）/ maybe = 🔺（たぶん）/ no = ❌（参加できない）。行がなければ ➖（未回答） */
 export type VoteValue = "yes" | "maybe" | "no";
@@ -34,25 +36,32 @@ export function getPoll(db: D1Database, id: number): Promise<PollRow | null> {
   return db.prepare(`SELECT ${POLL_COLUMNS} FROM polls WHERE id = ?1`).bind(id).first<PollRow>();
 }
 
-/** 日程調整と候補日をまとめて作る */
+/**
+ * 日程調整と候補日をまとめて作る。サーバーの行がなければ既定値で作る。
+ * すべて 1 つの batch（トランザクション）で行う（DB との往復 1 回）。候補日は直前に作った日程調整に付ける。
+ */
 export async function insertPoll(
   db: D1Database,
   p: Pick<PollRow, "guild_id" | "channel_id" | "title" | "duration_minutes">,
   candidates: number[],
 ): Promise<{ poll: PollRow; candidates: CandidateRow[] }> {
-  const row = await db
-    .prepare(
-      `INSERT INTO polls (guild_id, channel_id, title, duration_minutes)
-       VALUES (?1, ?2, ?3, ?4) RETURNING ${POLL_COLUMNS}`,
-    )
-    .bind(p.guild_id, p.channel_id, p.title, p.duration_minutes)
-    .first<PollRow>();
-  if (!row) throw new Error("insertPoll returned no row");
-  const insert = db.prepare(
-    `INSERT INTO poll_candidates (poll_id, position, start_at) VALUES (?1, ?2, ?3) RETURNING id, poll_id, position, start_at`,
+  const insertCandidate = db.prepare(
+    `INSERT INTO poll_candidates (poll_id, position, start_at)
+     VALUES ((SELECT MAX(id) FROM polls), ?1, ?2) RETURNING id, poll_id, position, start_at`,
   );
-  const results = await db.batch<CandidateRow>(candidates.map((start, i) => insert.bind(row.id, i + 1, start)));
-  return { poll: row, candidates: results.map((r) => r.results[0]!) };
+  const [, inserted, ...rows] = await db.batch([
+    ensureServerStatement(db, p.guild_id, p.channel_id),
+    db
+      .prepare(
+        `INSERT INTO polls (guild_id, channel_id, title, duration_minutes)
+         VALUES (?1, ?2, ?3, ?4) RETURNING ${POLL_COLUMNS}`,
+      )
+      .bind(p.guild_id, p.channel_id, p.title, p.duration_minutes),
+    ...candidates.map((start, i) => insertCandidate.bind(i + 1, start)),
+  ]);
+  const poll = inserted?.results[0] as PollRow | undefined;
+  if (!poll) throw new Error("insertPoll returned no row");
+  return { poll, candidates: rows.map((r) => r.results[0] as CandidateRow) };
 }
 
 export async function setPollMessage(db: D1Database, id: number, messageId: string): Promise<void> {
