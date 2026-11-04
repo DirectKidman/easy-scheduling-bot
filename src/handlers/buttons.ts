@@ -11,9 +11,10 @@ import {
   getServer,
   getServerOrDefault,
   listResponses,
+  respondAndList,
   transitionEventState,
-  upsertResponse,
   type EventRow,
+  type ResponseRow,
   type RsvpStatus,
   type ServerRow,
 } from "../db/queries";
@@ -36,18 +37,25 @@ export async function handleButton(
   const eventId = Number(idText);
   if (!Number.isSafeInteger(eventId)) return ephemeral("不明な操作です。");
 
-  const event = await getEvent(ctx.env.DB, eventId);
+  // 回答は、イベントの確認・保存・名簿の読み込みを 1 回の往復で済ませる
+  if (action === "rsvp") return handleRsvp(ctx, interaction, eventId, arg);
+
+  // イベントと、必要ならサーバー設定・名簿を並行して読む（往復 1 回）
+  const [event, server, responses] = await Promise.all([
+    getEvent(ctx.env.DB, eventId),
+    action === "cancel" || action === "cancelok" || action === "detail"
+      ? getServer(ctx.env.DB, interaction.guild_id)
+      : null,
+    action === "detail" ? listResponses(ctx.env.DB, eventId) : [],
+  ]);
   // 他サーバーのイベント ID を埋め込んだボタンを受け付けない
   if (!event || event.guild_id !== interaction.guild_id) return ephemeral(GONE);
 
   switch (action) {
-    case "rsvp":
-      return handleRsvp(ctx, interaction, event, arg);
     case "detail":
-      return handleDetail(ctx, interaction, event);
+      return handleDetail(interaction, event, server, responses);
     case "cancel":
     case "cancelok": {
-      const server = await getServer(ctx.env.DB, interaction.guild_id);
       // 権限チェックはボタンが見えるかどうかに頼らず、押されるたびに行う
       if (!server || !isOperator(interaction.member, server)) {
         return ephemeral("イベントを中止できるのは運営者だけです。");
@@ -62,15 +70,23 @@ export async function handleButton(
 async function handleRsvp(
   ctx: Context,
   interaction: APIMessageComponentGuildInteraction,
-  event: EventRow,
+  eventId: number,
   status: string | undefined,
 ): Promise<APIInteractionResponse> {
   if (!STATUSES.includes(status as RsvpStatus)) return ephemeral("不明な操作です。");
+
+  const { event, responses } = await respondAndList(ctx.env.DB, {
+    eventId,
+    guildId: interaction.guild_id,
+    userId: interaction.member.user.id,
+    status: status as RsvpStatus,
+    now: ctx.now,
+  });
+  // 他サーバーのイベント ID を埋め込んだボタンを受け付けない（この場合は保存もしていない）
+  if (!event || event.guild_id !== interaction.guild_id) return ephemeral(GONE);
   if (event.state !== "scheduled") return ephemeral("このイベントは受付を終了しています。");
   if (event.start_at <= ctx.now) return ephemeral("このイベントはすでに開始しています。");
 
-  await upsertResponse(ctx.env.DB, event.id, interaction.member.user.id, status as RsvpStatus, ctx.now);
-  const responses = await listResponses(ctx.env.DB, event.id);
   const header =
     interaction.message.embeds[0]?.description ??
     fallbackHeader(event, (await getServerOrDefault(ctx.env.DB, event.guild_id)).timezone);
@@ -87,15 +103,13 @@ async function handleRsvp(
   };
 }
 
-async function handleDetail(
-  ctx: Context,
+function handleDetail(
   interaction: APIMessageComponentGuildInteraction,
   event: EventRow,
-): Promise<APIInteractionResponse> {
-  const responses = await listResponses(ctx.env.DB, event.id);
-  let server: ServerRow | null = null;
-  if (event.state === "scheduled") server = await getServer(ctx.env.DB, event.guild_id);
-  const canCancel = server !== null && isOperator(interaction.member, server);
+  server: ServerRow | null,
+  responses: ResponseRow[],
+): APIInteractionResponse {
+  const canCancel = event.state === "scheduled" && server !== null && isOperator(interaction.member, server);
 
   return ephemeralMessage({
     embeds: [{ title: `📅 ${event.title} の回答一覧`, description: buildRosterDetail(event, responses) }],

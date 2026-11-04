@@ -90,9 +90,12 @@ export async function handleForgetButton(
 
   switch (action) {
     case "past": {
-      const n =
-        (await deletePastResponses(ctx.env.DB, userId, ctx.now)) +
-        (await deletePastPollVotes(ctx.env.DB, userId, ctx.now));
+      // 2 つの削除は互いに関係しないので並行して行う（往復 1 回）
+      const [responses, votes] = await Promise.all([
+        deletePastResponses(ctx.env.DB, userId, ctx.now),
+        deletePastPollVotes(ctx.env.DB, userId, ctx.now),
+      ]);
+      const n = responses + votes;
       return update({ content: `🗑️ 終了済みのイベント・候補日への回答を ${n} 件削除しました。` });
     }
     case "all":
