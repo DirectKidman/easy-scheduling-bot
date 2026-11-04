@@ -34,9 +34,19 @@ import {
 } from "../db/queries";
 import { isOperator } from "../discord/permissions";
 import { DiscordErrorCode, discordRequest, isDiscordError } from "../discord/rest";
-import { defer, ephemeral, ephemeralMessage, logError, type Context, type MessageBody } from "../interaction";
+import {
+  defer,
+  editOriginal,
+  ephemeral,
+  ephemeralMessage,
+  interactionTime,
+  logError,
+  type Context,
+  type MessageBody,
+} from "../interaction";
 import { buildAnnouncement, messageLink } from "../render";
 import {
+  applyVoteToPanel,
   buildConfirmedPollMessage,
   buildPollDetail,
   buildPollHeader,
@@ -177,8 +187,21 @@ export async function handlePollComponent(
       if (poll.state !== "open") return ephemeral("この日程調整は受付を終了しています。");
       const [candText, value, pageText] = args;
       if (!VOTE_VALUES.includes(value as VoteValue)) return ephemeral("不明な操作です。");
+      // 押されたパネルをその場で書き換えてすぐ返し、保存と投票メッセージの描き直しは応答の後に行う
+      const instant = applyVoteToPanel(interaction.message, interaction.data.custom_id);
+      if (instant) {
+        ctx.exec.waitUntil(
+          persistVote(ctx, poll, server, userId, Number(candText), instant.value, Number(pageText) || 0, interaction).catch(
+            (err) => logError("persist vote failed", err),
+          ),
+        );
+        return {
+          type: InteractionResponseType.UpdateMessage,
+          data: { ...instant.body, allowed_mentions: { parse: [] } },
+        };
+      }
       return defer(ctx, interaction.token, "update", () =>
-        saveVote(ctx, poll, server, userId, Number(candText), value as VoteValue, Number(pageText) || 0),
+        saveVote(ctx, poll, server, userId, Number(candText), value as VoteValue, Number(pageText) || 0, interaction.id),
       );
     }
     case "detail":
@@ -286,13 +309,15 @@ async function saveVote(
   candidateId: number,
   value: VoteValue,
   page: number,
+  interactionId: string,
 ): Promise<MessageBody> {
   const [candidates, votes] = await Promise.all([listCandidates(ctx.env.DB, poll.id), listVotes(ctx.env.DB, poll.id)]);
   const candidate = candidates.find((c) => c.id === candidateId);
   // 開始済みの候補は締め切り。ボタンにも出していないが、古いパネルからの操作に備えてここでも弾く
   if (candidate && candidate.start_at > ctx.now) {
     const current = votes.find((v) => v.candidate_id === candidateId && v.user_id === userId)?.value;
-    await setVote(ctx.env.DB, candidateId, userId, current === value ? null : value, ctx.now);
+    const next = current === value ? null : value;
+    await setVote(ctx.env.DB, candidateId, userId, next, ctx.now, interactionTime(interactionId));
 
     // 公開の投票メッセージの書き換えは、本人の回答パネルの更新を待たせないよう並行して進める
     ctx.exec.waitUntil(
@@ -300,6 +325,33 @@ async function saveVote(
     );
   }
   return votePanel(ctx, poll, server, userId, page);
+}
+
+/**
+ * すぐ返したパネルの回答を保存する。受け付けられなければ（開始済みの候補など）、パネルを DB の状態に戻す。
+ * value は押した後の回答（null は取り消し）。トグルの判定はパネル側で済ませている。
+ * 保存の順番が前後しても、押した時刻が最も新しい回答が残る（`setVote`）。
+ */
+async function persistVote(
+  ctx: Context,
+  poll: PollRow,
+  server: ServerRow,
+  userId: string,
+  candidateId: number,
+  value: VoteValue | null,
+  page: number,
+  interaction: { id: string; token: string },
+): Promise<void> {
+  const candidates = await listCandidates(ctx.env.DB, poll.id);
+  const candidate = candidates.find((c) => c.id === candidateId);
+  if (!candidate || candidate.start_at <= ctx.now) {
+    await editOriginal(ctx.env, interaction.token, await votePanel(ctx, poll, server, userId, page));
+    return;
+  }
+  // 後から押した分がもう保存されていれば、この回答は捨てる（投票メッセージの描き直しもそちらに任せる）
+  if (await setVote(ctx.env.DB, candidateId, userId, value, ctx.now, interactionTime(interaction.id))) {
+    await refreshPollMessage(ctx, poll);
+  }
 }
 
 async function pollDetail(
@@ -344,7 +396,7 @@ async function confirmPick(
     ];
   } else {
     content = [
-      `「${poll.title}」を次の ${chosen.length} 日程で確定しますか？`,
+      `「${poll.title}」を次の ${chosen.length} 日間で確定しますか？`,
       ...chosen.map((c) => `・**${range(c)}**　${tallyText(tally.get(c.id)!)}`),
       "日程ごとに、⭕ の人は「参加」、🔺 の人は「未定」、❌ の人は「不参加」として引き継ぎます。",
       "日程ごとに告知メッセージを投稿し（それぞれがリマインドの対象になります）、投票メッセージは確定した日程の一覧に切り替わります。候補日ごとの投票データは削除されます。",
@@ -360,7 +412,7 @@ async function confirmPick(
             type: ComponentType.Button,
             style: ButtonStyle.Success,
             custom_id: `poll:fix:${poll.id}:${chosen.map((c) => c.position).join(".")}`,
-            label: chosen.length === 1 ? "確定する" : `${chosen.length} 日程で確定する`,
+            label: chosen.length === 1 ? "確定する" : `${chosen.length} 日間で確定する`,
           },
         ],
       },
@@ -499,7 +551,7 @@ async function confirmMany(
     note = "\n（投票メッセージが見つからなかったため、投票メッセージは更新していません。）";
   }
   return {
-    content: `✅ 「${poll.title}」を ${chosen.length} 日程で確定し、日程ごとに告知を投稿しました。\n${lines.join("\n")}${note}`,
+    content: `✅ 「${poll.title}」を ${chosen.length} 日間で確定し、日程ごとに告知を投稿しました。\n${lines.join("\n")}${note}`,
     embeds: [],
     components: [],
   };

@@ -88,25 +88,42 @@ export async function listVotes(db: D1Database, pollId: number): Promise<VoteRow
   return res.results;
 }
 
-/** 1 つの候補日への回答を保存する。value が null なら回答を消して「➖（未回答）」に戻す */
+/**
+ * 1 つの候補日への回答を保存する。value が null なら回答を消して「➖（未回答）」に戻す。
+ * clickedAt（押した時刻・ミリ秒）が、同じ候補日・ユーザーで最後に保存したものより古ければ何もしない
+ * （すばやく続けて押したとき、保存の順番が前後しても最後に押したものを残すため）。
+ * 押した時刻の記録と回答の保存は 1 つの batch（トランザクション）で行う。保存した場合に true。
+ */
 export async function setVote(
   db: D1Database,
   candidateId: number,
   userId: string,
   value: VoteValue | null,
   now: number,
-): Promise<void> {
-  if (value === null) {
-    await db.prepare(`DELETE FROM poll_votes WHERE candidate_id = ?1 AND user_id = ?2`).bind(candidateId, userId).run();
-    return;
-  }
-  await db
-    .prepare(
-      `INSERT INTO poll_votes (candidate_id, user_id, value, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)
-       ON CONFLICT (candidate_id, user_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-    )
-    .bind(candidateId, userId, value, now)
-    .run();
+  clickedAt: number,
+): Promise<boolean> {
+  const latest = `EXISTS (SELECT 1 FROM poll_vote_clicks WHERE candidate_id = ?1 AND user_id = ?2 AND clicked_at = ?3)`;
+  const [click] = await db.batch([
+    db
+      .prepare(
+        `INSERT INTO poll_vote_clicks (candidate_id, user_id, clicked_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT (candidate_id, user_id) DO UPDATE SET clicked_at = excluded.clicked_at
+         WHERE excluded.clicked_at >= poll_vote_clicks.clicked_at`,
+      )
+      .bind(candidateId, userId, clickedAt),
+    value === null
+      ? db
+          .prepare(`DELETE FROM poll_votes WHERE candidate_id = ?1 AND user_id = ?2 AND ${latest}`)
+          .bind(candidateId, userId, clickedAt)
+      : db
+          .prepare(
+            `INSERT INTO poll_votes (candidate_id, user_id, value, created_at, updated_at)
+             SELECT ?1, ?2, ?4, ?5, ?5 WHERE ${latest}
+             ON CONFLICT (candidate_id, user_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+          )
+          .bind(candidateId, userId, clickedAt, value, now),
+  ]);
+  return (click?.meta.changes ?? 0) > 0;
 }
 
 /**
@@ -207,17 +224,18 @@ export async function countPollVotesForUser(
 }
 
 export async function deletePastPollVotes(db: D1Database, userId: string, now: number): Promise<number> {
-  const res = await db
-    .prepare(
-      `DELETE FROM poll_votes
-       WHERE user_id = ?1 AND candidate_id IN (SELECT id FROM poll_candidates WHERE start_at < ?2)`,
-    )
-    .bind(userId, now)
-    .run();
-  return res.meta.changes;
+  const past = `user_id = ?1 AND candidate_id IN (SELECT id FROM poll_candidates WHERE start_at < ?2)`;
+  const [res] = await db.batch([
+    db.prepare(`DELETE FROM poll_votes WHERE ${past}`).bind(userId, now),
+    db.prepare(`DELETE FROM poll_vote_clicks WHERE ${past}`).bind(userId, now),
+  ]);
+  return res!.meta.changes;
 }
 
 export async function deleteAllPollVotes(db: D1Database, userId: string): Promise<number> {
-  const res = await db.prepare(`DELETE FROM poll_votes WHERE user_id = ?1`).bind(userId).run();
-  return res.meta.changes;
+  const [res] = await db.batch([
+    db.prepare(`DELETE FROM poll_votes WHERE user_id = ?1`).bind(userId),
+    db.prepare(`DELETE FROM poll_vote_clicks WHERE user_id = ?1`).bind(userId),
+  ]);
+  return res!.meta.changes;
 }
