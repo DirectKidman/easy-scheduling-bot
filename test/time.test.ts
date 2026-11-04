@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   formatDateTime,
   formatRange,
-  formatTableDate,
   isValidTimeZone,
   parseCandidates,
   parseDuration,
@@ -110,11 +109,6 @@ describe("表示用の整形（タイムスタンプ記法を使わない）", (
     expect(formatRange(at("2026-11-12T00:00:00Z"), 60, "America/New_York")).toBe(
       "11/11(水) 19:00〜20:00（America/New_York）",
     );
-  });
-
-  it("表の日付列は幅をそろえる", () => {
-    expect(formatTableDate(at("2026-11-12T10:00:00Z"), TOKYO)).toBe("11/12(木)19:00");
-    expect(formatTableDate(at("2027-01-05T00:30:00Z"), TOKYO)).toBe(" 1/ 5(火)09:30");
   });
 });
 

@@ -1,5 +1,5 @@
 export type PollState = "open" | "cancelled" | "message_deleted";
-/** yes = 〇（参加できる）/ maybe = △（たぶん）/ no = ×（参加できない）。行がなければ －（未回答） */
+/** yes = ⭕（参加できる）/ maybe = 🔺（たぶん）/ no = ❌（参加できない）。行がなければ ➖（未回答） */
 export type VoteValue = "yes" | "maybe" | "no";
 
 export interface PollRow {
@@ -88,7 +88,7 @@ export async function listVotes(db: D1Database, pollId: number): Promise<VoteRow
   return res.results;
 }
 
-/** 1 つの候補日への回答を保存する。value が null なら回答を消して「－（未回答）」に戻す */
+/** 1 つの候補日への回答を保存する。value が null なら回答を消して「➖（未回答）」に戻す */
 export async function setVote(
   db: D1Database,
   candidateId: number,
@@ -110,25 +110,25 @@ export async function setVote(
 }
 
 /**
- * 確定: 選ばれた候補の回答を確定イベントの回答に引き継ぎ（〇→参加、△→未定、×→不参加）、
- * 同じ告知メッセージを使うイベントを作って、日程調整（候補・投票）は物理削除する。
- * D1 の batch は 1 トランザクションなので、同時に確定されても イベントは 1 つしかできない。
- * すでに確定・中止されていれば null。
+ * 確定: 選ばれた候補日ごとにイベントを作り、その候補の回答を引き継いで（⭕→参加、🔺→未定、❌→不参加）、
+ * 日程調整（候補・投票）は物理削除する。イベントの告知メッセージは候補ごとに指定する。
+ * D1 の batch は 1 トランザクションなので、同時に確定されてもイベントは二重にできない。
+ * すでに確定・中止されていれば null。戻り値のイベント ID は picks と同じ順。
  */
 export async function confirmPoll(
   db: D1Database,
   poll: PollRow,
-  candidate: CandidateRow,
+  picks: { candidate: CandidateRow; messageId: string | null }[],
   now: number,
-): Promise<number | null> {
+): Promise<number[] | null> {
   const stillOpen = `EXISTS (SELECT 1 FROM polls WHERE id = ?1 AND state = 'open')`;
-  const [inserted] = await db.batch<{ id: number }>([
+  const statements = picks.flatMap(({ candidate, messageId }) => [
     db
       .prepare(
         `INSERT INTO events (guild_id, channel_id, message_id, title, start_at, duration_minutes)
          SELECT ?2, ?3, ?4, ?5, ?6, ?7 WHERE ${stillOpen} RETURNING id`,
       )
-      .bind(poll.id, poll.guild_id, poll.channel_id, poll.message_id, poll.title, candidate.start_at, poll.duration_minutes),
+      .bind(poll.id, poll.guild_id, poll.channel_id, messageId, poll.title, candidate.start_at, poll.duration_minutes),
     db
       .prepare(
         `INSERT INTO responses (event_id, user_id, status, updated_at)
@@ -136,9 +136,11 @@ export async function confirmPoll(
          FROM poll_votes WHERE candidate_id = ?2 AND ${stillOpen}`,
       )
       .bind(poll.id, candidate.id, now),
-    db.prepare(`DELETE FROM polls WHERE id = ?1 AND state = 'open'`).bind(poll.id),
   ]);
-  return inserted?.results[0]?.id ?? null;
+  statements.push(db.prepare(`DELETE FROM polls WHERE id = ?1 AND state = 'open'`).bind(poll.id));
+  const results = await db.batch<{ id: number }>(statements);
+  const ids = picks.map((_, i) => results[i * 2]?.results[0]?.id);
+  return ids.every((id) => id !== undefined) ? (ids as number[]) : null;
 }
 
 /** 最後の候補日から保持期間を過ぎた日程調整を物理削除する（候補・投票は ON DELETE CASCADE） */
