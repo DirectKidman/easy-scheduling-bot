@@ -1,19 +1,17 @@
 import type { APIChatInputApplicationCommandGuildInteraction, APIInteractionResponse } from "discord-api-types/v10";
-import { getServer, upsertServer, type ReminderMode } from "../db/queries";
+import { DEFAULT_TIMEZONE, getServer, upsertServer, type ReminderMode } from "../db/queries";
 import { isManager } from "../discord/permissions";
 import { retentionDays } from "../env";
 import { ephemeral, type Context } from "../interaction";
 import { isValidTimeZone } from "../time";
-import { getOption } from "./options";
-
-const DEFAULT_TIMEZONE = "Asia/Tokyo";
+import { getOption, interactionChannelId } from "./options";
 
 export function privacyNotice(days: number): string {
   return [
     "**🔒 このbotが保存するデータ**",
-    "・サーバー設定（告知チャンネル、運営ロール、タイムゾーン）",
-    "・イベントのタイトルと日時、告知メッセージの ID",
-    "・ボタンで回答した人のユーザー ID と回答（参加／未定／不参加）",
+    "・サーバー設定（運営ロール、タイムゾーン、リマインドの送り方）",
+    "・イベント・日程調整のタイトルと日時、告知したチャンネルとメッセージの ID",
+    "・ボタンで回答した人のユーザー ID と回答（参加／未定／不参加、〇／△／×）",
     "場所・説明は告知メッセージにだけ書かれ、DB には保存しません。メッセージの本文は読みません。",
     `イベントと回答は開始日時から ${days} 日後に自動で削除されます。`,
     "自分の回答は `/forget` でいつでも削除できます。",
@@ -30,14 +28,15 @@ export async function handleSetup(
     return ephemeral("このコマンドはサーバー管理権限を持つ人だけが実行できます。");
   }
   const options = interaction.data.options;
-  const channelId = getOption<string>(options, "channel");
-  const roleId = getOption<string>(options, "operator_role") ?? null;
+  const roleInput = getOption<string>(options, "operator_role");
+  const clearRole = getOption<boolean>(options, "clear_operator_role") === true;
   const tzInput = getOption<string>(options, "timezone")?.trim();
   const reminderOption = getOption<string>(options, "reminder");
   const reminderInput = reminderOption === "channel" || reminderOption === "dm" ? reminderOption : undefined;
-  if (!channelId) return ephemeral("告知チャンネルを指定してください。");
 
+  // 省略した項目は今の設定を引き継ぐ（初回は既定値）
   const existing = await getServer(ctx.env.DB, interaction.guild_id);
+  const roleId = clearRole ? null : (roleInput ?? existing?.operator_role_id ?? null);
   const timezone = tzInput || existing?.timezone || DEFAULT_TIMEZONE;
   const reminderMode: ReminderMode = reminderInput ?? existing?.reminder_mode ?? "channel";
   if (!isValidTimeZone(timezone)) {
@@ -47,23 +46,21 @@ export async function handleSetup(
     return ephemeral("@everyone は運営ロールに指定できません。");
   }
 
-  await upsertServer(ctx.env.DB, {
-    guild_id: interaction.guild_id,
-    announce_channel_id: channelId,
-    operator_role_id: roleId,
-    timezone,
-    reminder_mode: reminderMode,
-  });
+  await upsertServer(
+    ctx.env.DB,
+    { guild_id: interaction.guild_id, operator_role_id: roleId, timezone, reminder_mode: reminderMode },
+    interactionChannelId(interaction) ?? "",
+  );
 
   return ephemeral(
     [
       "✅ 設定を保存しました。",
-      `告知チャンネル: <#${channelId}>`,
       `運営ロール: ${roleId ? `<@&${roleId}>` : "なし（サーバー管理権限を持つ人のみ）"}`,
       `タイムゾーン: \`${timezone}\``,
-      `リマインド: ${reminderMode === "dm" ? "DM（届かない人は告知チャンネルでメンション）" : "告知チャンネルでメンション"}（開始の約24時間前と約1〜2時間前）`,
+      `リマインド: ${reminderMode === "dm" ? "DM（届かない人は告知したチャンネルでメンション）" : "告知したチャンネルでメンション"}（開始の約24時間前と約1〜2時間前）`,
       "",
-      "告知チャンネルで bot が「チャンネルを見る」「メッセージを送信」「埋め込みリンク」「メッセージ履歴を読む」を使えることを確認してください。",
+      "`/event`・`/poll` は、実行したチャンネルに告知を投稿します（リマインドもそのチャンネルに届きます）。",
+      "秘匿チャンネルで使うときは、そのチャンネルに bot を追加し、「チャンネルを見る」「メッセージを送信」「埋め込みリンク」「メッセージ履歴を読む」を許可してください。",
       "",
       privacyNotice(retentionDays(ctx.env)),
     ].join("\n"),

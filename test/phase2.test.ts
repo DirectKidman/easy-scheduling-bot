@@ -47,10 +47,9 @@ const addResponse = (eventId: number, userId: string, status = "going") =>
 
 describe("/setup のリマインド設定", () => {
   it("DM を選べて、省略時は前の設定を引き継ぐ", async () => {
-    const channel = { name: "channel", type: 7, value: CHANNEL_ID };
     const admin = { userId: ADMIN_ID, permissions: ADMIN_PERMS };
-    await interact(command("setup", [channel, { name: "reminder", type: 3, value: "dm" }], admin));
-    await interact(command("setup", [channel], admin));
+    await interact(command("setup", [{ name: "reminder", type: 3, value: "dm" }], admin));
+    await interact(command("setup", [{ name: "timezone", type: 3, value: "Asia/Tokyo" }], admin));
     expect(await env.DB.prepare("SELECT reminder_mode FROM servers").first("reminder_mode")).toBe("dm");
   });
 });
@@ -285,7 +284,7 @@ describe("bot 外しの確認ジョブ", () => {
     await seedServer();
     await env.DB.prepare("UPDATE servers SET deletion_scheduled_at = 1").run();
     await interact(
-      command("setup", [{ name: "channel", type: 7, value: CHANNEL_ID }], { userId: ADMIN_ID, permissions: ADMIN_PERMS }),
+      command("setup", [], { userId: ADMIN_ID, permissions: ADMIN_PERMS }),
     );
     expect((await serverRow(GUILD_ID))!.deletion_scheduled_at).toBeNull();
   });

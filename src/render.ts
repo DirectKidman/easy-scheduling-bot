@@ -8,6 +8,7 @@ import {
   type APIEmbedField,
 } from "discord-api-types/v10";
 import type { EventRow, ResponseRow, RsvpStatus } from "./db/queries";
+import { formatRange } from "./time";
 
 export const STATUS_META: Record<RsvpStatus, { emoji: string; label: string }> = {
   going: { emoji: "✅", label: "参加" },
@@ -30,22 +31,18 @@ export function mention(userId: string): string {
   return `<@${userId}>`;
 }
 
-/** 「<開始> 〜 <終了>（あと何日）」。終了は日付をまたぐ長さなら日付付きで出す */
-export function formatTimeRange(startAt: number, durationMinutes: number): string {
-  const end = startAt + durationMinutes * 60;
-  const endStyle = durationMinutes >= 24 * 60 ? "f" : "t";
-  return `<t:${startAt}:F> 〜 <t:${end}:${endStyle}>（<t:${startAt}:R>）`;
-}
 
 /** 告知メッセージ本文（日時・場所・主催・説明）。作成時にだけ作り、以後はメッセージ側を正とする。 */
 export function buildHeader(opts: {
   startAt: number;
   durationMinutes: number;
+  timezone: string;
+  now: number;
   location?: string;
   hostId: string;
   description?: string;
 }): string {
-  const lines = [`日時　${formatTimeRange(opts.startAt, opts.durationMinutes)}`];
+  const lines = [`日時　${formatRange(opts.startAt, opts.durationMinutes, opts.timezone, opts.now)}`];
   if (opts.location) lines.push(`場所　${opts.location}`);
   lines.push(`主催　${mention(opts.hostId)}`);
   let text = lines.join("\n");
@@ -54,8 +51,8 @@ export function buildHeader(opts: {
 }
 
 /** メッセージの埋め込みが読めない場合の代替ヘッダー */
-export function fallbackHeader(event: Pick<EventRow, "start_at" | "duration_minutes">): string {
-  return `日時　${formatTimeRange(event.start_at, event.duration_minutes)}`;
+export function fallbackHeader(event: Pick<EventRow, "start_at" | "duration_minutes">, timezone: string): string {
+  return `日時　${formatRange(event.start_at, event.duration_minutes, timezone)}`;
 }
 
 export function groupResponses(responses: ResponseRow[]): Record<RsvpStatus, string[]> {

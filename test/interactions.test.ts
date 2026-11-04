@@ -8,6 +8,7 @@ import {
   callWorker,
   CHANNEL_ID,
   command,
+  SECRET_CHANNEL_ID,
   FakeDiscord,
   GUILD_ID,
   interact,
@@ -66,7 +67,7 @@ describe("署名検証", () => {
 
 describe("/setup", () => {
   it("管理権限がないと拒否する", async () => {
-    const res = await interact(command("setup", [{ name: "channel", type: 7, value: CHANNEL_ID }]));
+    const res = await interact(command("setup", [{ name: "timezone", type: 3, value: "UTC" }]));
     expect(res.data.flags).toBe(MessageFlags.Ephemeral);
     expect(res.data.content).toContain("サーバー管理権限");
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM servers").first("n")).toBe(0);
@@ -77,7 +78,6 @@ describe("/setup", () => {
       command(
         "setup",
         [
-          { name: "channel", type: 7, value: CHANNEL_ID },
           { name: "operator_role", type: 8, value: OPERATOR_ROLE_ID },
           { name: "timezone", type: 3, value: "America/New_York" },
         ],
@@ -87,21 +87,34 @@ describe("/setup", () => {
     expect(res.data.content).toContain("設定を保存しました");
     expect(res.data.content).toContain("bot の運営者");
     const row = await env.DB.prepare("SELECT * FROM servers WHERE guild_id = ?1").bind(GUILD_ID).first();
-    expect(row).toMatchObject({
-      announce_channel_id: CHANNEL_ID,
-      operator_role_id: OPERATOR_ROLE_ID,
-      timezone: "America/New_York",
-    });
+    expect(row).toMatchObject({ operator_role_id: OPERATOR_ROLE_ID, timezone: "America/New_York" });
+    expect(res.data.content).toContain("実行したチャンネルに告知");
+  });
+
+  it("省略した項目は今の設定を引き継ぎ、clear_operator_role で運営ロールを外せる", async () => {
+    await interact(
+      command(
+        "setup",
+        [
+          { name: "operator_role", type: 8, value: OPERATOR_ROLE_ID },
+          { name: "timezone", type: 3, value: "UTC" },
+        ],
+        admin,
+      ),
+    );
+    await interact(command("setup", [{ name: "reminder", type: 3, value: "dm" }], admin));
+    const row = () => env.DB.prepare("SELECT * FROM servers WHERE guild_id = ?1").bind(GUILD_ID).first();
+    expect(await row()).toMatchObject({ operator_role_id: OPERATOR_ROLE_ID, timezone: "UTC", reminder_mode: "dm" });
+
+    await interact(command("setup", [{ name: "clear_operator_role", type: 5, value: true }], admin));
+    expect(await row()).toMatchObject({ operator_role_id: null, timezone: "UTC", reminder_mode: "dm" });
   });
 
   it("不正なタイムゾーンは拒否する", async () => {
     const res = await interact(
       command(
         "setup",
-        [
-          { name: "channel", type: 7, value: CHANNEL_ID },
-          { name: "timezone", type: 3, value: "Mars/Olympus" },
-        ],
+        [{ name: "timezone", type: 3, value: "Mars/Olympus" }],
         admin,
       ),
     );
@@ -110,9 +123,28 @@ describe("/setup", () => {
 });
 
 describe("/event", () => {
-  it("未設定のサーバーでは /setup を案内する", async () => {
+  it("/setup をしていなくても、サーバー管理権限があれば作れる（それ以外の人は作れない）", async () => {
     const res = await interact(command("event", [], admin));
-    expect(res.data.content).toContain("/setup");
+    expect(res.type).toBe(InteractionResponseType.Modal);
+    const denied = await interact(command("event"));
+    expect(denied.data.content).toContain("運営者");
+
+    await interact(modal("event:create", { title: "読書会", datetime: EVENT_INPUT }, admin));
+    expect(await env.DB.prepare("SELECT timezone, operator_role_id FROM servers").first()).toEqual({
+      timezone: "Asia/Tokyo",
+      operator_role_id: null,
+    });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM events").first("n")).toBe(1);
+  });
+
+  it("コマンドを実行したチャンネル（秘匿チャンネルなど）に告知する", async () => {
+    await seedServer();
+    await interact(
+      modal("event:create", { title: "秘匿セッション", datetime: EVENT_INPUT }, { ...admin, channelId: SECRET_CHANNEL_ID }),
+    );
+    const [posted] = discord.callsTo("POST", /^\/channels\/\d+\/messages$/);
+    expect(posted!.path).toBe(`/channels/${SECRET_CHANNEL_ID}/messages`);
+    expect(await env.DB.prepare("SELECT channel_id FROM events").first("channel_id")).toBe(SECRET_CHANNEL_ID);
   });
 
   it("運営者以外にはモーダルを出さない", async () => {
@@ -148,7 +180,9 @@ describe("/event", () => {
     expect(posted!.path).toBe(`/channels/${CHANNEL_ID}/messages`);
     const embed = posted!.body.embeds[0];
     expect(embed.title).toBe("📅 読書会");
-    expect(embed.description).toContain(`<t:${EVENT_UNIX}:F>`);
+    // 日時はタイムスタンプ記法を使わず、サーバーのタイムゾーンで書いた文字列にする
+    expect(embed.description).toMatch(new RegExp(`^日時　${NEXT_YEAR}/10/11\\(.\\) 19:00〜21:00\n`));
+    expect(embed.description).not.toContain("<t:");
     expect(embed.description).toContain("場所　#voice-1");
     expect(embed.description).toContain(`主催　<@${ADMIN_ID}>`);
     expect(posted!.body.allowed_mentions).toEqual({ parse: [] });
@@ -176,6 +210,7 @@ describe("/event", () => {
     await interact(modal("event:create", { title: "x", datetime: EVENT_INPUT }, admin));
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM events").first("n")).toBe(0);
     expect(discord.followups()[0].content).toContain("投稿できませんでした");
+    expect(discord.followups()[0].content).toContain("bot（または bot のロール）を追加");
   });
 });
 

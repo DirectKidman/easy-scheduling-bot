@@ -11,6 +11,7 @@ import { DiscordErrorCode, discordRequest, isDiscordError } from "../discord/res
 import { subrequestBudget, type Env } from "../env";
 import { logError } from "../interaction";
 import { mention, messageLink } from "../render";
+import { formatRange } from "../time";
 
 const HOUR = 60 * 60;
 /** 前日のリマインド: 開始 24 時間前から */
@@ -70,7 +71,7 @@ export async function runReminders(env: Env, now: number): Promise<ReminderStats
     if (!send || !(await claimReminder(env.DB, event.id, send, now))) continue;
 
     try {
-      await sendReminder(env, event, send, budget);
+      await sendReminder(env, event, send, budget, now);
       stats.sent++;
     } catch (err) {
       logError(`reminder for event ${event.id} failed`, err);
@@ -82,10 +83,12 @@ export async function runReminders(env: Env, now: number): Promise<ReminderStats
   return stats;
 }
 
-function reminderText(event: ReminderCandidate, kind: ReminderKind): string {
+function reminderText(event: ReminderCandidate, kind: ReminderKind, now: number): string {
   const when = kind === "day_before" ? "明日" : "まもなく";
   const link = event.message_id ? `\n告知: ${messageLink(event.guild_id, event.channel_id, event.message_id)}` : "";
-  return `⏰ **リマインド**（${when}）「${event.title}」は <t:${event.start_at}:f>（<t:${event.start_at}:R>）に始まります。${link}`;
+  // スマホの通知でも読めるよう、日時はタイムスタンプ記法ではなく文字列で書く
+  const range = formatRange(event.start_at, event.duration_minutes, event.timezone, now);
+  return `⏰ **リマインド**（${when}）「${event.title}」は ${range} です。${link}`;
 }
 
 async function sendReminder(
@@ -93,10 +96,11 @@ async function sendReminder(
   event: ReminderCandidate,
   kind: ReminderKind,
   budget: { remaining: number },
+  now: number,
 ): Promise<void> {
   const responses = await listResponses(env.DB, event.id);
   const targets = responses.filter((r) => r.status === "going" || r.status === "maybe").map((r) => r.user_id);
-  const text = reminderText(event, kind);
+  const text = reminderText(event, kind, now);
 
   let channelTargets = targets;
   if (event.reminder_mode === "dm") {
