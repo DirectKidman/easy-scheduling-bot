@@ -8,7 +8,7 @@ import { discordRequest } from "./discord/rest";
 import type { Env } from "./env";
 import { logError } from "./interaction";
 import { escapeMarkdown, messageLink, STATUS_META } from "./render";
-import { formatRange } from "./time";
+import { formatDate, formatRange, formatTime } from "./time";
 
 export interface Busy {
   kind: "event" | "poll";
@@ -103,6 +103,32 @@ export async function fetchGuildNames(env: Env, guildIds: Iterable<string>): Pro
     }),
   );
   return names;
+}
+
+/**
+ * 回答パネル用の箇条書き 1 項目: 「- ⚠️ 19:00〜22:00 タイトル ⭕（サーバーB・日程調整中）」。
+ * スマホの狭い幅で折り返しても、箇条書きの字下げで候補日の行と見分けられるようにする。
+ * 候補日と同じ日（同じタイムゾーン）の予定は時刻だけにして短くする。サーバー名と種類は末尾に回す。
+ */
+export function formatBusyItem(
+  b: Busy,
+  names: Map<string, string>,
+  candidateStart: number,
+  timezone: string,
+  now?: number,
+): string {
+  const title = escapeMarkdown(b.title);
+  const titleText = b.link ? `[${title}](${b.link})` : title;
+  const sameDay =
+    b.timezone === timezone &&
+    formatDate(b.start_at, timezone) === formatDate(candidateStart, timezone) &&
+    formatDate(b.end_at, timezone) === formatDate(b.start_at, timezone);
+  const range = sameDay
+    ? `${formatTime(b.start_at, timezone)}〜${formatTime(b.end_at, timezone)}`
+    : formatRange(b.start_at, (b.end_at - b.start_at) / 60, b.timezone, now);
+  const server = names.get(b.guild_id);
+  const notes = [...(server ? [escapeMarkdown(server)] : []), ...(b.kind === "poll" ? ["日程調整中"] : [])];
+  return `- ⚠️ ${range} ${titleText} ${b.mark}${notes.length > 0 ? `（${notes.join("・")}）` : ""}`;
 }
 
 /** 本文用の 1 行: 「サーバー名　11/12(水) 19:00〜21:00　タイトル（日程調整中）　✅」 */
