@@ -361,6 +361,49 @@ describe("回答パネル（日付ごとの ⭕🔺❌ ボタンと、予定の�
     expect(await votesOf(MEMBER_ID)).toEqual([{ candidate_id: c2, value: "maybe" }]);
   });
 
+  it("すばやく続けて押して保存の順番が前後しても、最後に押した回答が残る", async () => {
+    await seedServer();
+    const base = nowSec() + 10 * DAY;
+    const messageId = seedMessage(discord);
+    const { pollId, candidateIds } = await seedPoll({ starts: [base, base + DAY], messageId });
+    const c1 = candidateIds[0]!;
+    await seedVote(c1, MEMBER_ID, "no");
+    await interact(button(`poll:vote:${pollId}`));
+    const panel = discord.followups()[0]; // c1 は ❌
+    // インタラクション ID（snowflake）の上位ビットが押した時刻
+    const at = (ms: number) => String(BigInt(ms) << 22n);
+    const press = (value: string, ms: number) =>
+      interact({ ...button(`poll:v:${pollId}:${c1}:${value}:0`, panel), id: at(ms) });
+    const redraws = () => discord.callsTo("PATCH", new RegExp(`/messages/${messageId}$`)).length;
+
+    // ⭕ → 🔺 → ❌（取り消し）の順に押したが、保存は 取り消し → ⭕ → 🔺 の順に届いた
+    await press("no", 3000);
+    expect(await votesOf(MEMBER_ID)).toEqual([]);
+    const afterLatest = redraws();
+    await press("yes", 1000);
+    await press("maybe", 2000);
+    expect(await votesOf(MEMBER_ID)).toEqual([]);
+    // 古い回答は保存せず、投票メッセージも描き直さない
+    expect(redraws()).toBe(afterLatest);
+
+    // その後に押した分は保存される
+    await press("maybe", 4000);
+    expect(await votesOf(MEMBER_ID)).toEqual([{ candidate_id: c1, value: "maybe" }]);
+  });
+
+  it("/forget で、押した時刻の記録も消す", async () => {
+    await seedServer();
+    const base = nowSec() + 10 * DAY;
+    const { pollId, candidateIds } = await seedPoll({ starts: [base, base + DAY] });
+    await interact(button(`poll:vote:${pollId}`));
+    await interact(button(`poll:v:${pollId}:${candidateIds[0]}:yes:0`, discord.followups()[0]));
+    const clicks = () =>
+      env.DB.prepare("SELECT COUNT(*) AS n FROM poll_vote_clicks WHERE user_id = ?1").bind(MEMBER_ID).first("n");
+    expect(await clicks()).toBe(1);
+    await interact(button("forget:allok"));
+    expect(await clicks()).toBe(0);
+  });
+
   it("ページが分かれていても、押した行の候補日を書き換える", async () => {
     await seedServer();
     const base = nowSec() + 10 * DAY;

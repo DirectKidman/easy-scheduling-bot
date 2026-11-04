@@ -16,6 +16,13 @@ export interface Context {
 
 export type MessageBody = RESTPatchAPIWebhookWithTokenMessageJSONBody;
 
+const DISCORD_EPOCH_MS = 1420070400000n;
+
+/** インタラクションが作られた時刻（UNIX ミリ秒）。ID（snowflake）の上位ビットに入っている */
+export function interactionTime(id: string): number {
+  return Number((BigInt(id) >> 22n) + DISCORD_EPOCH_MS);
+}
+
 /** 自分にだけ見えるメッセージで返す */
 export function ephemeral(content: string): APIInteractionResponse {
   return {

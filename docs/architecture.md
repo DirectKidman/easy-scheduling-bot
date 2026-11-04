@@ -86,7 +86,7 @@ Discord は **3 秒以内の応答**を求める。応答の返し方は 3 種�
 | すぐ返す | `/setup`、エラー、詳細表示 | その場で結果を返す |
 | メッセージの書き換え（`UPDATE_MESSAGE`） | 出欠ボタン、各種の確認画面 | ボタンが付いていたメッセージそのものを、応答で書き換える。REST の投稿レート制限を使わない |
 | 後回し（defer） | `/event` `/poll` の作成、`/my`、回答パネル、確定・中止 | 先に「処理中」を返し、`ctx.waitUntil` で処理を続けてから REST で元の応答を編集する（`interaction.ts` の `defer`）。インタラクションのトークンは 15 分有効 |
-| すぐ書き換えて、保存は後で | 回答パネルの ⭕🔺❌ ボタン | 押されたパネル（`interaction.message`）の、その行のボタンの色と「あなた: 」の記号だけを書き換えて、その場で返す（`UpdateMessage`。`renderPoll.ts` の `applyVoteToPanel`）。DB への保存と投票メッセージの描き直しは `waitUntil` で応答の後に行う。開始済みの候補などで保存できなかったときは、パネルを DB の状態で描き直す（`handlers/poll.ts` の `persistVote`）。パネルが想定した形でなければ、従来どおり defer で DB から作り直す |
+| すぐ書き換えて、保存は後で | 回答パネルの ⭕🔺❌ ボタン | 押されたパネル（`interaction.message`）の、その行のボタンの色と「あなた: 」の記号だけを書き換えて、その場で返す（`UpdateMessage`。`renderPoll.ts` の `applyVoteToPanel`）。DB への保存と投票メッセージの描き直しは `waitUntil` で応答の後に行う。開始済みの候補などで保存できなかったときは、パネルを DB の状態で描き直す（`handlers/poll.ts` の `persistVote`）。パネルが想定した形でなければ、従来どおり defer で DB から作り直す。すばやく続けて押すと保存の順番が前後しうるので、候補日 × ユーザーごとに最後に押した時刻（インタラクション ID の snowflake から取るミリ秒）を `poll_vote_clicks` に記録し、それより古いクリックの保存は捨てる。記録と保存は 1 つの batch で行う（`db/polls.ts` の `setVote`）。取り消しは `poll_votes` の行を消すので、時刻を別テーブルに持つ |
 
 誰が押したかは、Discord が送ってくるペイロードの `member.user.id` で分かる。署名を検証しているので、この値は Discord が保証したものとして扱える。
 
@@ -99,6 +99,7 @@ erDiagram
   events ||--o{ responses : "ON DELETE CASCADE"
   polls ||--o{ poll_candidates : "ON DELETE CASCADE"
   poll_candidates ||--o{ poll_votes : "ON DELETE CASCADE"
+  poll_candidates ||--o{ poll_vote_clicks : "ON DELETE CASCADE"
 
   servers {
     text guild_id PK
@@ -149,6 +150,11 @@ erDiagram
     text value "yes(⭕) / maybe(🔺) / no(❌)。行がなければ ➖"
     int created_at "最初に回答した時刻（名前の並び順）"
     int updated_at
+  }
+  poll_vote_clicks {
+    int candidate_id PK,FK
+    text user_id PK
+    int clicked_at "最後にボタンを押した時刻（ミリ秒）。古い保存を捨てるため"
   }
 ```
 
@@ -260,7 +266,6 @@ sequenceDiagram
 
 - 投票メッセージの ➖（未回答）に出るのは、ほかの候補日に一度でも回答した人だけ（メンバー一覧は取得しないため、まだ何も押していない人は出ない）
 - 日程調整の告知メッセージが消されたかどうかは、毎日の確認ジョブの対象外（誰かが操作したときに検知する）
-- 回答パネルで同じ候補日のボタンを続けてすばやく押すと、保存の順番が前後し、パネルの表示と保存された回答がずれることがある（パネルを開き直すと保存された回答が出る）
 - 投票メッセージの再描画は、同時に何人も選ぶと順番が前後し、一時的に古い集計が表示されることがある（次の操作で直る）
 - `/my` で他サーバー名を隠す設定、匿名化、特定イベントだけの `/forget` は未実装（要件のフェーズ3）
 - `compatibility_date` と `.npmrc` の `legacy-peer-deps=true` は、テスト用パッケージとの兼ね合いで入れている
