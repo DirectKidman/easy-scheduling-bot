@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { ButtonStyle, InteractionResponseType, MessageFlags } from "discord-api-types/v10";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DAILY_CRON } from "../src/jobs/scheduled";
+import { formatBusyItem, type Busy } from "../src/conflicts";
 import { formatRange } from "../src/time";
 import {
   ADMIN_ID,
@@ -223,6 +224,37 @@ describe("投票メッセージの回答状況（日付ごとの一覧）", () =
   });
 });
 
+describe("回答パネルの重なりの行", () => {
+  const candidate = Date.parse("2027-11-12T19:00:00+09:00") / 1000;
+  const busy = (over: Partial<Busy>): Busy => ({
+    kind: "event",
+    id: 1,
+    guild_id: OTHER_GUILD,
+    title: "読書会",
+    start_at: Date.parse("2027-11-12T18:00:00+09:00") / 1000,
+    end_at: Date.parse("2027-11-12T20:00:00+09:00") / 1000,
+    timezone: TOKYO,
+    mark: "✅",
+    link: null,
+    ...over,
+  });
+  const names = new Map([[OTHER_GUILD, "サーバーB"]]);
+
+  it("箇条書きにし、候補日と同じ日なら時刻だけ、サーバー名は末尾に出す", () => {
+    expect(formatBusyItem(busy({}), names, candidate, TOKYO)).toBe("- ⚠️ 18:00〜20:00 読書会 ✅（サーバーB）");
+    expect(formatBusyItem(busy({ kind: "poll", mark: "⭕" }), names, candidate, TOKYO)).toBe(
+      "- ⚠️ 18:00〜20:00 読書会 ⭕（サーバーB・日程調整中）",
+    );
+  });
+
+  it("別の日にかかる予定は日付も出す。サーバー名が取れなければ省く", () => {
+    const start = Date.parse("2027-11-11T23:00:00+09:00") / 1000;
+    expect(formatBusyItem(busy({ start_at: start }), new Map(), candidate, TOKYO)).toBe(
+      `- ⚠️ ${formatRange(start, 21 * 60, TOKYO)} 読書会 ✅`,
+    );
+  });
+});
+
 describe("回答パネル（日付ごとの ⭕🔺❌ ボタンと、予定の参照）", () => {
   it("候補日ごとに [日付][⭕][🔺][❌] を並べ、他サーバーの予定や別の日程調整との重なりを本人にだけ表示する", async () => {
     await seedServer();
@@ -251,15 +283,21 @@ describe("回答パネル（日付ごとの ⭕🔺❌ ボタンと、予定の�
     expect(JSON.stringify(panel)).not.toContain("<t:");
     const lines: string[] = panel.embeds[0].description.split("\n");
     expect(lines[0]).toMatch(/あなた: ➖$/);
-    expect(lines[1]).toContain("⚠️ **サーバーB**");
-    expect(lines[1]).toContain("[読書会](https://discord.com/channels/");
-    expect(lines[1]).toMatch(/✅$/);
+    // 重なりは箇条書きで、サーバー名は末尾
+    expect(lines[1]).toMatch(/^- ⚠️ .*\[読書会\]\(https:\/\/discord\.com\/channels\/[^)]+\) ✅（サーバーB）$/);
     expect(lines[2]).toMatch(/あなた: 🔺$/);
     expect(lines[3]).toMatch(/あなた: ➖$/);
-    expect(lines[4]).toContain("カラオケ");
-    expect(lines[4]).toContain("（日程調整中）");
+    expect(lines[4]).toMatch(/^- ⚠️ .*カラオケ ⭕（サーバーB・日程調整中）$/);
     expect(lines.join("\n")).not.toContain("行けない会");
     expect(panel.embeds[0].footer.text).toContain("2 件の候補日");
+
+    // 重なりの行があっても、すぐ返す書き換えは押した候補日の行に当たる
+    const pressed = await interact(button(`poll:v:${pollId}:${candidateIds[2]}:yes:0`, panel));
+    expect(pressed.type).toBe(InteractionResponseType.UpdateMessage);
+    const after: string[] = pressed.data.embeds[0].description.split("\n");
+    expect(after[3]).toMatch(/あなた: ⭕$/);
+    expect(after[1]).toBe(lines[1]);
+    expect(after[4]).toBe(lines[4]);
 
     const rows = voteRows(panel);
     expect(rows).toHaveLength(3);
