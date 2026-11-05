@@ -163,6 +163,16 @@ describe("リマインド", () => {
     expect(posts.map((p) => (p.content.includes("明日") ? "day_before" : "day_of"))).toEqual(["day_before", "day_of"]);
   });
 
+  it("タイトルの Markdown（リンク記法など）は無効にして送る", async () => {
+    await seedServer();
+    const now = nowSec();
+    await seedEvent({ startAt: now + 20 * HOUR, title: "[公式案内](https://example.com)", messageId: seedMessage(discord) });
+    await runCron(HOURLY_CRON, now * 1000);
+    const posts = reminderPosts();
+    expect(posts).toHaveLength(1);
+    expect(posts[0].content).toContain("「\\[公式案内\\]\\(https://example.com\\)」");
+  });
+
   it("当日の時間帯まで前日分が送れていなかったら、当日分だけを送る", async () => {
     await seedServer();
     const start = nowSec() + HOUR;
