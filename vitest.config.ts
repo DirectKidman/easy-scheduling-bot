@@ -18,6 +18,8 @@ export default defineConfig(async () => {
             DISCORD_PUBLIC_KEY: publicKeyHex,
             DISCORD_BOT_TOKEN: "test-bot-token",
             DISCORD_APPLICATION_ID: "100000000000000001",
+            // 投票メッセージの描き直しをまとめる待ち時間（テストでは待たない）
+            POLL_REFRESH_DELAY_MS: "0",
             TEST_PRIVATE_KEY: privateKeyHex,
             TEST_MIGRATIONS: migrations,
           },

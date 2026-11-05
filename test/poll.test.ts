@@ -3,6 +3,7 @@ import { ButtonStyle, InteractionResponseType, MessageFlags } from "discord-api-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DAILY_CRON } from "../src/jobs/scheduled";
 import { formatBusyItem, type Busy } from "../src/conflicts";
+import { readPollForRefresh, releasePollRefresh, REFRESH_LOCK_SECONDS, setVote } from "../src/db/polls";
 import { formatRange } from "../src/time";
 import {
   ADMIN_ID,
@@ -589,6 +590,69 @@ describe("回答パネル（日付ごとの ⭕🔺❌ ボタンと、予定の�
     await interact(button(`poll:v:${pollId}:${candidateIds[0]}:yes:0`, panel));
     expect(discord.followups().at(-1)).toMatchObject({ content: expect.stringContaining("受付を終了"), components: [] });
     expect(await votesOf(MEMBER_ID)).toEqual([]);
+  });
+});
+
+describe("投票メッセージの描き直しをまとめる", () => {
+  const lockOf = (pollId: number) =>
+    env.DB.prepare("SELECT refresh_lock_at FROM polls WHERE id = ?1").bind(pollId).first("refresh_lock_at");
+  const setLock = (pollId: number, at: number) =>
+    env.DB.prepare("UPDATE polls SET refresh_lock_at = ?2 WHERE id = ?1").bind(pollId, at).run();
+
+  async function setup() {
+    await seedServer();
+    const base = nowSec() + 10 * DAY;
+    const messageId = seedMessage(discord);
+    const { pollId, candidateIds } = await seedPoll({ starts: [base, base + DAY], messageId });
+    await interact(button(`poll:vote:${pollId}`));
+    const panel = discord.followups()[0];
+    const redraws = () => discord.callsTo("PATCH", new RegExp(`/messages/${messageId}$`)).length;
+    const press = (value: string) => interact(button(`poll:v:${pollId}:${candidateIds[0]}:${value}:0`, panel));
+    return { pollId, candidateIds, messageId, redraws, press };
+  }
+
+  it("描き直しの担当を取った回答が描き直し、終わったら担当を手放す", async () => {
+    const { pollId, messageId, redraws, press } = await setup();
+    await press("yes");
+    expect(redraws()).toBe(1);
+    expect(discord.messages.get(messageId)!.embeds[0]!.fields![0]!.value).toContain("⭕ 1");
+    expect(await lockOf(pollId)).toBeNull();
+  });
+
+  it("担当がいる間の回答は保存するが、それぞれでは描き直さない（担当がまとめて反映する）", async () => {
+    const { pollId, candidateIds, redraws, press } = await setup();
+    await setLock(pollId, nowSec());
+    await press("yes");
+    expect(await votesOf(MEMBER_ID)).toEqual([{ candidate_id: candidateIds[0], value: "yes" }]);
+    expect(redraws()).toBe(0);
+    expect((await readPollForRefresh(env.DB, pollId))!.seq).toBe(1);
+  });
+
+  it(`担当が ${REFRESH_LOCK_SECONDS} 秒以上手放さなければ、次の回答が担当を取り直す`, async () => {
+    const { pollId, redraws, press } = await setup();
+    await setLock(pollId, nowSec() - REFRESH_LOCK_SECONDS - 1);
+    await press("yes");
+    expect(redraws()).toBe(1);
+    expect(await lockOf(pollId)).toBeNull();
+  });
+
+  it("描き直しの後に回答が入っていれば、担当を手放さずにもう一度描き直す", async () => {
+    await seedServer();
+    const base = nowSec() + 10 * DAY;
+    const { pollId, candidateIds } = await seedPoll({ starts: [base] });
+    const vote = (userId: string, clickedAt: number) =>
+      setVote(env.DB, { pollId, candidateId: candidateIds[0]!, userId, value: "yes", clickedAt }, nowSec());
+
+    expect(await vote("11", 1)).toEqual({ applied: true, refresher: true });
+    const seen = (await readPollForRefresh(env.DB, pollId))!.seq;
+    // 担当が描き直している間に、別の人の回答が入った
+    expect(await vote("12", 2)).toEqual({ applied: true, refresher: false });
+    expect(await releasePollRefresh(env.DB, pollId, seen)).toBe(false);
+    const latest = await readPollForRefresh(env.DB, pollId);
+    expect(latest!.votes.map((v) => v.user_id)).toEqual(["11", "12"]);
+    expect(await releasePollRefresh(env.DB, pollId, latest!.seq)).toBe(true);
+    // 古い押下は保存せず、担当も取らない
+    expect(await vote("12", 1)).toEqual({ applied: false, refresher: false });
   });
 });
 
