@@ -9,7 +9,7 @@ import {
 } from "discord-api-types/v10";
 import { formatBusyItem, NO_VOTE_MARK, VOTE_MARK, type Busy } from "./conflicts";
 import type { CandidateRow, PollRow, VoteRow, VoteValue } from "./db/polls";
-import { mention } from "./render";
+import { closeButton, mention } from "./render";
 import { formatDateTime, formatRange } from "./time";
 
 const COLOR_OPEN = 0x57f287;
@@ -224,12 +224,14 @@ export function buildConfirmedPollMessage(poll: Pick<PollRow, "title">, pollHead
 
 // ---- 本人にだけ見える回答パネル ----
 
-/** 1 メッセージに置けるボタンの行は 5 つまで。候補が 5 つを超えたら 4 行ずつに分け、最後の行をページ送りにする */
+/**
+ * 1 メッセージに置けるボタンの行は 5 つまで。候補日は 4 行ずつ並べ、最後の行は閉じるボタン（とページ送り）にする
+ */
 const MAX_ROWS = 5;
 const ROWS_PER_PAGE = MAX_ROWS - 1;
 
 export function pageCount(openCount: number): number {
-  return openCount <= MAX_ROWS ? 1 : Math.ceil(openCount / ROWS_PER_PAGE);
+  return Math.max(1, Math.ceil(openCount / ROWS_PER_PAGE));
 }
 
 const SELECTED_STYLE: Record<VoteValue, APIButtonComponentWithCustomId["style"]> = {
@@ -299,34 +301,10 @@ export function buildVotePanel(opts: {
     return { type: ComponentType.ActionRow, components: [label, ...voteButtons] };
   });
 
-  if (pages > 1) {
-    rows.push({
-      type: ComponentType.ActionRow,
-      components: [
-        {
-          type: ComponentType.Button,
-          style: ButtonStyle.Secondary,
-          custom_id: `poll:page:${poll.id}:${page - 1}`,
-          label: "◀ 前へ",
-          disabled: page === 0,
-        },
-        {
-          type: ComponentType.Button,
-          style: ButtonStyle.Secondary,
-          custom_id: `poll:pageinfo:${poll.id}`,
-          label: `${page + 1} / ${pages}`,
-          disabled: true,
-        },
-        {
-          type: ComponentType.Button,
-          style: ButtonStyle.Secondary,
-          custom_id: `poll:page:${poll.id}:${page + 1}`,
-          label: "次へ ▶",
-          disabled: page === pages - 1,
-        },
-      ],
-    });
-  }
+  rows.push({
+    type: ComponentType.ActionRow,
+    components: [...(pages > 1 ? pageButtons(poll.id, page, pages) : []), closeButton()],
+  });
 
   return {
     content:
@@ -338,6 +316,32 @@ export function buildVotePanel(opts: {
     components: rows,
     allowed_mentions: { parse: [] },
   };
+}
+
+function pageButtons(pollId: number, page: number, pages: number): APIButtonComponentWithCustomId[] {
+  return [
+    {
+      type: ComponentType.Button,
+      style: ButtonStyle.Secondary,
+      custom_id: `poll:page:${pollId}:${page - 1}`,
+      label: "◀ 前へ",
+      disabled: page === 0,
+    },
+    {
+      type: ComponentType.Button,
+      style: ButtonStyle.Secondary,
+      custom_id: `poll:pageinfo:${pollId}`,
+      label: `${page + 1} / ${pages}`,
+      disabled: true,
+    },
+    {
+      type: ComponentType.Button,
+      style: ButtonStyle.Secondary,
+      custom_id: `poll:page:${pollId}:${page + 1}`,
+      label: "次へ ▶",
+      disabled: page === pages - 1,
+    },
+  ];
 }
 
 /**
@@ -447,13 +451,24 @@ export function buildPollDetail(opts: {
         ],
       });
     }
-    components.push({
-      type: ComponentType.ActionRow,
-      components: [
-        { type: ComponentType.Button, style: ButtonStyle.Danger, custom_id: `poll:cancel:${poll.id}`, label: "日程調整を中止（運営者）" },
-      ],
-    });
   }
+  // 最後の行に閉じるボタン（運営者は中止ボタンと並べる）
+  components.push({
+    type: ComponentType.ActionRow,
+    components: [
+      ...(isOperator && poll.state === "open"
+        ? [
+            {
+              type: ComponentType.Button,
+              style: ButtonStyle.Danger,
+              custom_id: `poll:cancel:${poll.id}`,
+              label: "日程調整を中止（運営者）",
+            } as const,
+          ]
+        : []),
+      closeButton(),
+    ],
+  });
 
   return {
     embeds: [{ title: `🗳️ ${poll.title} の回答一覧`, description: description.trim() || "—" }],

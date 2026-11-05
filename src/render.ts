@@ -20,6 +20,17 @@ export const STATUSES: RsvpStatus[] = ["going", "maybe", "declined"];
 /** 告知メッセージの名簿に表示する最大人数（超えた分は「他n人」） */
 export const ROSTER_LIMIT = 20;
 
+/** 本人にだけ見えるメッセージ（回答パネル・詳細・/my など）を閉じる（削除する）ボタン */
+export const CLOSE_ID = "close";
+
+export function closeButton(): APIButtonComponentWithCustomId {
+  return { type: ComponentType.Button, style: ButtonStyle.Secondary, custom_id: CLOSE_ID, label: "✕ 閉じる" };
+}
+
+export function closeRow(): APIActionRowComponent<APIComponentInMessageActionRow> {
+  return { type: ComponentType.ActionRow, components: [closeButton()] };
+}
+
 const COLOR_SCHEDULED = 0x5865f2;
 const COLOR_CANCELLED = 0x80848e;
 

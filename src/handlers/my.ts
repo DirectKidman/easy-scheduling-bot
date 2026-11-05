@@ -3,7 +3,7 @@ import { fetchGuildNames, VOTE_MARK } from "../conflicts";
 import { listOpenPollVotesForUser, type UserPollVote } from "../db/polls";
 import { listUpcomingForUser } from "../db/queries";
 import { defer, type Context } from "../interaction";
-import { escapeMarkdown, messageLink, STATUS_META } from "../render";
+import { closeRow, escapeMarkdown, messageLink, STATUS_META } from "../render";
 import { formatDateTime } from "../time";
 
 /** 一度に表示する最大件数 */
@@ -21,7 +21,7 @@ export function handleMy(
       listOpenPollVotesForUser(ctx.env.DB, userId, ctx.now),
     ]);
     if (rows.length === 0 && votes.length === 0) {
-      return { content: "📋 参加・未定と回答した今後の予定や、回答中の日程調整はありません。" };
+      return { content: "📋 参加・未定と回答した今後の予定や、回答中の日程調整はありません。", components: [closeRow()] };
     }
     const shown = rows.slice(0, MAX_ITEMS);
     const polls = groupByPoll(votes).slice(0, MAX_POLLS);
@@ -58,7 +58,7 @@ export function handleMy(
         footer: { text: "回答した今後の候補日を表示しています（⭕ 参加できる　🔺 たぶん　❌ 参加できない）" },
       });
     }
-    return { embeds };
+    return { embeds, components: [closeRow()] };
   });
 }
 

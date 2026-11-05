@@ -47,6 +47,19 @@ export function editOriginal(env: Env, token: string, body: MessageBody): Promis
   );
 }
 
+/**
+ * ボタンが付いたメッセージを閉じる（削除する）。すぐ「処理中」を返し、削除は応答の後に行う。
+ * 本人にだけ見えるメッセージは、bot からはインタラクションの webhook 経由でしか消せない。
+ */
+export function closeMessage(ctx: Context, token: string): APIInteractionResponse {
+  ctx.exec.waitUntil(
+    discordRequest(ctx.env, "DELETE", `/webhooks/${ctx.env.DISCORD_APPLICATION_ID}/${token}/messages/@original`, {
+      noAuth: true,
+    }).catch((err) => logError("close message failed", err)),
+  );
+  return { type: InteractionResponseType.DeferredMessageUpdate };
+}
+
 /** 応答の後に、本人にだけ見える追加メッセージを送る */
 export function followupEphemeral(env: Env, token: string, body: MessageBody): Promise<unknown> {
   return discordRequest(env, "POST", `/webhooks/${env.DISCORD_APPLICATION_ID}/${token}`, {

@@ -63,6 +63,8 @@ type Row = { components: { custom_id: string; label: string; style: number; disa
 const voteRows = (panel: { components: Row[] }) =>
   panel.components.filter((r) => r.components.some((c) => c.custom_id.startsWith("poll:v:")));
 
+const customIds = (rows: Row[]) => rows.flatMap((r) => r.components.map((c) => c.custom_id));
+
 describe("/poll の作成", () => {
   it("運営者以外にはモーダルを出さない", async () => {
     await seedServer();
@@ -498,7 +500,7 @@ describe("回答パネル（日付ごとの ⭕🔺❌ ボタンと、予定の�
     const first = discord.followups()[0];
     expect(voteRows(first)).toHaveLength(4);
     const nav = first.components.at(-1).components;
-    expect(nav.map((c: { label: string }) => c.label)).toEqual(["◀ 前へ", "1 / 2", "次へ ▶"]);
+    expect(nav.map((c: { label: string }) => c.label)).toEqual(["◀ 前へ", "1 / 2", "次へ ▶", "✕ 閉じる"]);
     expect(nav[0].disabled).toBe(true);
 
     const res = await interact(button(nav[2].custom_id));
@@ -514,14 +516,30 @@ describe("回答パネル（日付ごとの ⭕🔺❌ ボタンと、予定の�
     expect(voteRows(discord.followups().at(-1))[1]!.components[1]!.style).toBe(ButtonStyle.Success);
   });
 
-  it("候補日が 5 つまでならページ送りは出さない", async () => {
+  it("候補日が 4 つまでならページ送りは出さず、最後の行は閉じるボタンだけ", async () => {
+    await seedServer();
+    const base = nowSec() + 10 * DAY;
+    const { pollId } = await seedPoll({ starts: Array.from({ length: 4 }, (_, i) => base + i * DAY) });
+    await interact(button(`poll:vote:${pollId}`));
+    const panel = discord.followups()[0];
+    expect(panel.components).toHaveLength(5);
+    expect(voteRows(panel)).toHaveLength(4);
+    expect(customIds([panel.components.at(-1)])).toEqual(["close"]);
+  });
+
+  it("候補日が 5 つならページを分ける（最後の行を閉じるボタンに使うため）", async () => {
     await seedServer();
     const base = nowSec() + 10 * DAY;
     const { pollId } = await seedPoll({ starts: Array.from({ length: 5 }, (_, i) => base + i * DAY) });
     await interact(button(`poll:vote:${pollId}`));
     const panel = discord.followups()[0];
-    expect(panel.components).toHaveLength(5);
-    expect(voteRows(panel)).toHaveLength(5);
+    expect(voteRows(panel)).toHaveLength(4);
+    expect(customIds([panel.components.at(-1)])).toEqual([
+      `poll:page:${pollId}:-1`,
+      `poll:pageinfo:${pollId}`,
+      `poll:page:${pollId}:1`,
+      "close",
+    ]);
   });
 
   it("開始済みの候補はボタンを出さず、押されても変更しない", async () => {
@@ -594,12 +612,12 @@ describe("確定・中止", () => {
     expect(asMember.data.flags).toBe(MessageFlags.Ephemeral);
     expect(asMember.data.embeds[0].description).toContain("⭕ 参加できる (1) <@u1>");
     expect(asMember.data.embeds[0].description).toContain("❌ 参加できない (1) <@u4>");
-    expect(asMember.data.components).toEqual([]);
+    expect(customIds(asMember.data.components)).toEqual(["close"]);
 
     const asAdmin = await interact(button(`poll:detail:${pollId}`, {}, admin));
     expect(asAdmin.data.components[0].components[0].custom_id).toBe(`poll:pick:${pollId}`);
     expect(asAdmin.data.components[0].components[0].options[1].label).toMatch(/　⭕1 🔺1 ❌1$/);
-    expect(asAdmin.data.components[1].components[0].custom_id).toBe(`poll:cancel:${pollId}`);
+    expect(customIds([asAdmin.data.components[1]])).toEqual([`poll:cancel:${pollId}`, "close"]);
   });
 
   it("運営者以外は確定できない（ボタンが見えるかに関係なく確認する）", async () => {
