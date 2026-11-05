@@ -17,6 +17,8 @@ import {
   insertPoll,
   listCandidates,
   listVotes,
+  readPollForRefresh,
+  releasePollRefresh,
   setPollMessage,
   setVote,
   transitionPollState,
@@ -58,6 +60,7 @@ import {
   VOTE_VALUES,
 } from "../renderPoll";
 import { formatDateTime, formatRange, parseCandidates, parseDuration } from "../time";
+import { refreshDelayMs } from "../env";
 import { MAX_AHEAD_SECONDS } from "./event";
 import { cannotPostMessage, getModalValue, interactionChannelId } from "./options";
 
@@ -379,12 +382,13 @@ async function saveVote(
   if (candidate && candidate.start_at > ctx.now) {
     const current = votes.find((v) => v.candidate_id === candidateId && v.user_id === userId)?.value;
     const next = current === value ? null : value;
-    await setVote(ctx.env.DB, candidateId, userId, next, ctx.now, interactionTime(interactionId));
-
-    // 公開の投票メッセージの書き換えは、本人の回答パネルの更新を待たせないよう並行して進める
-    ctx.exec.waitUntil(
-      refreshPollMessage(ctx, poll).catch((err) => logError("refresh poll message failed", err)),
+    const saved = await setVote(
+      ctx.env.DB,
+      { pollId: poll.id, candidateId, userId, value: next, clickedAt: interactionTime(interactionId) },
+      ctx.now,
     );
+    // 公開の投票メッセージの書き換えは、本人の回答パネルの更新を待たせないよう並行して進める
+    if (saved.refresher) ctx.exec.waitUntil(refreshPollMessageBatched(ctx, poll.id));
   }
   return votePanel(ctx, poll, server, userId, page);
 }
@@ -416,10 +420,14 @@ async function persistVote(
     await editOriginal(ctx.env, interaction.token, await votePanel(ctx, poll, server, userId, vote.page));
     return;
   }
-  // 後から押した分がもう保存されていれば、この回答は捨てる（投票メッセージの描き直しもそちらに任せる）
-  if (await setVote(ctx.env.DB, vote.candidateId, userId, vote.value, ctx.now, interactionTime(interaction.id))) {
-    await refreshPollMessage(ctx, poll);
-  }
+  // 後から押した分がもう保存されていれば、この回答は捨てる（投票メッセージの描き直しもそちらに任せる）。
+  // 描き直しの担当が別にいれば、その担当がこの回答もまとめて反映する
+  const saved = await setVote(
+    ctx.env.DB,
+    { pollId: poll.id, candidateId: vote.candidateId, userId, value: vote.value, clickedAt: interactionTime(interaction.id) },
+    ctx.now,
+  );
+  if (saved.refresher) await refreshPollMessageBatched(ctx, poll.id);
 }
 
 /** 選んだ候補のうち、まだ始まっていないものを日時順に。選べないものが混ざっていれば null */
@@ -612,6 +620,55 @@ async function confirmMany(
     embeds: [],
     components: [],
   };
+}
+
+/** 描き直しの担当が、1 回の処理で描き直す最大回数（Workers の 1 回あたりの外部通信の上限に収める） */
+const MAX_REFRESH_ROUNDS = 8;
+
+/**
+ * 回答による投票メッセージの描き直しをまとめる。描き直しの担当（setVote で担当を取れた処理）だけが呼ぶ。
+ * 少し待ってから最新の状態で描き直し、その間に新しい回答が入っていれば（vote_seq が進んでいれば）もう一度描き直す。
+ * 担当がいる間に保存された回答は、担当が反映するので、それぞれの処理では描き直さない。
+ * 大勢が同時に押しても、投票メッセージの書き換えは担当の 1 本だけになり、Discord の書き込み制限にかかりにくい。
+ */
+export async function refreshPollMessageBatched(ctx: Context, pollId: number): Promise<void> {
+  let released = false;
+  let header: string | undefined;
+  try {
+    for (let round = 0; round < MAX_REFRESH_ROUNDS; round++) {
+      await new Promise((r) => setTimeout(r, refreshDelayMs(ctx.env)));
+      const state = await readPollForRefresh(ctx.env.DB, pollId);
+      // 確定・中止・削除された日程調整は、その操作が投票メッセージを書き換える
+      if (!state || state.poll.state !== "open" || !state.poll.message_id) break;
+      const { poll, seq, candidates, votes } = state;
+      const path = `/channels/${poll.channel_id}/messages/${poll.message_id}`;
+      try {
+        // 本文（場所・説明など）は DB に保存していないので、投票メッセージから読む。2 回目からは読み直さない
+        header ??= (await discordRequest<APIMessage>(ctx.env, "GET", path)).embeds[0]?.description ?? "";
+        const server = await getServerOrDefault(ctx.env.DB, poll.guild_id);
+        await discordRequest(ctx.env, "PATCH", path, {
+          body: buildPollMessage(poll, header, candidates, votes, server.timezone, ctx.now),
+        });
+      } catch (err) {
+        if (isDiscordError(err, DiscordErrorCode.UnknownMessage, DiscordErrorCode.UnknownChannel)) {
+          await transitionPollState(ctx.env.DB, poll.id, "open", "message_deleted");
+          break;
+        }
+        throw err;
+      }
+      if (await releasePollRefresh(ctx.env.DB, pollId, seq)) {
+        released = true;
+        return;
+      }
+    }
+  } catch (err) {
+    logError("refresh poll message failed", err);
+  } finally {
+    // 回数の上限やエラーで抜けたときも担当を手放す（残った回答は、次に誰かが押したときに反映される）
+    if (!released) {
+      await releasePollRefresh(ctx.env.DB, pollId, null).catch((err) => logError("release poll refresh failed", err));
+    }
+  }
 }
 
 /** 投票メッセージを DB の状態から描き直す。消されていれば message_deleted にする */
