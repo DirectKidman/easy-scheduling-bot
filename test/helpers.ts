@@ -230,6 +230,9 @@ export class FakeDiscord {
     if (/^\/webhooks\/\d+\/[^/]+\/messages\/@original$/.test(path) && method === "PATCH") {
       return ok({ id: this.id(), ...body });
     }
+    if (/^\/webhooks\/\d+\/[^/]+\/messages\/@original$/.test(path) && method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
     return err(404, 0);
   }
 }

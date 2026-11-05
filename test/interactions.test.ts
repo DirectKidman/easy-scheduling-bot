@@ -278,10 +278,17 @@ describe("回答ボタン", () => {
     const asMember = await interact(button(`detail:${id}`, message));
     expect(asMember.data.flags).toBe(MessageFlags.Ephemeral);
     expect(asMember.data.embeds[0].description).toContain("<@11>");
-    expect(asMember.data.components).toEqual([]);
+    const ids = (rows: { components: { custom_id: string }[] }[]) => rows.flatMap((r) => r.components.map((c) => c.custom_id));
+    expect(ids(asMember.data.components)).toEqual(["close"]);
 
     const asAdmin = await interact(button(`detail:${id}`, message, admin));
-    expect(asAdmin.data.components[0].components[0].custom_id).toBe(`cancel:${id}`);
+    expect(ids(asAdmin.data.components)).toEqual([`cancel:${id}`, "close"]);
+  });
+
+  it("閉じるボタンは、すぐ応答してから本人にだけ見えるメッセージを削除する", async () => {
+    const res = await interact(button("close", message));
+    expect(res.type).toBe(InteractionResponseType.DeferredMessageUpdate);
+    expect(discord.callsTo("DELETE", /^\/webhooks\/\d+\/itoken\/messages\/@original$/)).toHaveLength(1);
   });
 
   it("中止ボタンはボタンが見えるかに関係なく毎回権限を確認する", async () => {
