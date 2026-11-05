@@ -21,7 +21,7 @@ import {
 import { isOperator } from "../discord/permissions";
 import { collectBusy, fetchGuildNames, formatBusyLine } from "../conflicts";
 import { defer, ephemeral, ephemeralMessage, followupEphemeral, logError, type Context } from "../interaction";
-import { buildAnnouncement, buildRosterDetail, fallbackHeader, STATUSES } from "../render";
+import { buildAnnouncement, buildRosterDetail, closeButton, closeRow, fallbackHeader, STATUSES } from "../render";
 
 const GONE = "このイベントは見つかりませんでした（削除された可能性があります）。";
 
@@ -113,21 +113,24 @@ function handleDetail(
 
   return ephemeralMessage({
     embeds: [{ title: `📅 ${event.title} の回答一覧`, description: buildRosterDetail(event, responses) }],
-    components: canCancel
-      ? [
-          {
-            type: ComponentType.ActionRow,
-            components: [
-              {
-                type: ComponentType.Button,
-                style: ButtonStyle.Danger,
-                custom_id: `cancel:${event.id}`,
-                label: "イベントを中止（運営者）",
-              },
-            ],
-          },
-        ]
-      : [],
+    components: [
+      {
+        type: ComponentType.ActionRow,
+        components: [
+          ...(canCancel
+            ? [
+                {
+                  type: ComponentType.Button,
+                  style: ButtonStyle.Danger,
+                  custom_id: `cancel:${event.id}`,
+                  label: "イベントを中止（運営者）",
+                } as const,
+              ]
+            : []),
+          closeButton(),
+        ],
+      },
+    ],
   });
 }
 
@@ -189,6 +192,7 @@ async function warnConflicts(
         `⚠️ 「${event.title}」の時間帯に、他の予定があります（あなたにだけ表示）`,
         ...busy.map((b) => `・${formatBusyLine(b, names)}`),
       ].join("\n"),
+      components: [closeRow()],
     };
     try {
       await followupEphemeral(ctx.env, interaction.token, body);

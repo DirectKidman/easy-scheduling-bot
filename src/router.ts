@@ -15,7 +15,8 @@ import { FORGET_PREFIX, handleForgetButton, handleForgetCommand } from "./handle
 import { handleMy } from "./handlers/my";
 import { handlePollCommand, handlePollComponent, handlePollModal, POLL_MODAL_ID, POLL_PREFIX } from "./handlers/poll";
 import { handleSetup } from "./handlers/setup";
-import { ephemeral, type Context } from "./interaction";
+import { closeMessage, ephemeral, type Context } from "./interaction";
+import { CLOSE_ID } from "./render";
 
 export async function routeInteraction(ctx: Context, interaction: APIInteraction): Promise<APIInteractionResponse> {
   if (interaction.type === InteractionType.Ping) return { type: InteractionResponseType.Pong };
@@ -45,6 +46,7 @@ export async function routeInteraction(ctx: Context, interaction: APIInteraction
     }
     case InteractionType.MessageComponent: {
       const component = interaction as APIMessageComponentGuildInteraction;
+      if (component.data.custom_id === CLOSE_ID) return closeMessage(ctx, component.token);
       if (component.data.custom_id.startsWith(POLL_PREFIX)) return handlePollComponent(ctx, component);
       if (component.data.component_type === ComponentType.Button) {
         if (component.data.custom_id.startsWith(FORGET_PREFIX)) return handleForgetButton(ctx, component);

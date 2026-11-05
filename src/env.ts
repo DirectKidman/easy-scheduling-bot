@@ -6,6 +6,7 @@ export interface Env {
   RETENTION_DAYS?: string;
   GUILD_GRACE_DAYS?: string;
   SUBREQUEST_BUDGET?: string;
+  POLL_REFRESH_DELAY_MS?: string;
 }
 
 function positive(value: string | undefined, fallback: number): number {
@@ -26,4 +27,10 @@ export function guildGraceDays(env: Env): number {
 /** 定期ジョブ 1 回あたりに使ってよい Discord API 呼び出し数（Workers のサブリクエスト上限より少なく） */
 export function subrequestBudget(env: Env): number {
   return positive(env.SUBREQUEST_BUDGET, 40);
+}
+
+/** 回答から投票メッセージの描き直しまで待つミリ秒（その間に押された回答をまとめて反映する） */
+export function refreshDelayMs(env: Env): number {
+  const n = Number(env.POLL_REFRESH_DELAY_MS ?? 1000);
+  return Number.isFinite(n) && n >= 0 ? n : 1000;
 }

@@ -97,22 +97,25 @@ export async function listVotes(db: D1Database, pollId: number): Promise<VoteRow
   return res.results;
 }
 
+/** 投票メッセージの描き直しの担当を、この秒数たっても手放していなければ、他の処理が取り直せる */
+export const REFRESH_LOCK_SECONDS = 60;
+
 /**
  * 1 つの候補日への回答を保存する。value が null なら回答を消して「➖（未回答）」に戻す。
  * clickedAt（押した時刻・ミリ秒）が、同じ候補日・ユーザーで最後に保存したものより古ければ何もしない
  * （すばやく続けて押したとき、保存の順番が前後しても最後に押したものを残すため）。
- * 押した時刻の記録と回答の保存は 1 つの batch（トランザクション）で行う。保存した場合に true。
+ * 保存した場合は、日程調整の vote_seq を進め、投票メッセージの描き直しの担当が空いていれば取る。
+ * ここまでを 1 つの batch（トランザクション）で行う（DB との往復 1 回）。
+ * applied: 保存したか / refresher: 描き直しの担当になったか（なれなければ、今の担当がこの回答も反映する）
  */
 export async function setVote(
   db: D1Database,
-  candidateId: number,
-  userId: string,
-  value: VoteValue | null,
+  vote: { pollId: number; candidateId: number; userId: string; value: VoteValue | null; clickedAt: number },
   now: number,
-  clickedAt: number,
-): Promise<boolean> {
+): Promise<{ applied: boolean; refresher: boolean }> {
+  const { pollId, candidateId, userId, value, clickedAt } = vote;
   const latest = `EXISTS (SELECT 1 FROM poll_vote_clicks WHERE candidate_id = ?1 AND user_id = ?2 AND clicked_at = ?3)`;
-  const [click] = await db.batch([
+  const [click, , , lock] = await db.batch([
     db
       .prepare(
         `INSERT INTO poll_vote_clicks (candidate_id, user_id, clicked_at) VALUES (?1, ?2, ?3)
@@ -131,8 +134,57 @@ export async function setVote(
              ON CONFLICT (candidate_id, user_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
           )
           .bind(candidateId, userId, clickedAt, value, now),
+    db
+      .prepare(`UPDATE polls SET vote_seq = vote_seq + 1 WHERE id = ?4 AND ${latest}`)
+      .bind(candidateId, userId, clickedAt, pollId),
+    db
+      .prepare(
+        `UPDATE polls SET refresh_lock_at = ?5
+         WHERE id = ?4 AND (refresh_lock_at IS NULL OR refresh_lock_at <= ?5 - ?6) AND ${latest}`,
+      )
+      .bind(candidateId, userId, clickedAt, pollId, now, REFRESH_LOCK_SECONDS),
   ]);
-  return (click?.meta.changes ?? 0) > 0;
+  const applied = (click?.meta.changes ?? 0) > 0;
+  return { applied, refresher: applied && (lock?.meta.changes ?? 0) > 0 };
+}
+
+/** 描き直し用に、日程調整・候補日・回答と vote_seq を 1 つの batch で読む（読み込みの間に回答が入っても食い違わない） */
+export async function readPollForRefresh(
+  db: D1Database,
+  pollId: number,
+): Promise<{ poll: PollRow; seq: number; candidates: CandidateRow[]; votes: VoteRow[] } | null> {
+  const [poll, candidates, votes] = await db.batch([
+    db.prepare(`SELECT ${POLL_COLUMNS}, vote_seq FROM polls WHERE id = ?1`).bind(pollId),
+    db.prepare(`SELECT id, poll_id, position, start_at FROM poll_candidates WHERE poll_id = ?1 ORDER BY position`).bind(pollId),
+    db
+      .prepare(
+        `SELECT v.candidate_id, v.user_id, v.value, v.created_at, v.updated_at
+         FROM poll_votes v JOIN poll_candidates c ON c.id = v.candidate_id
+         WHERE c.poll_id = ?1 ORDER BY v.created_at, v.user_id`,
+      )
+      .bind(pollId),
+  ]);
+  const row = (poll?.results[0] ?? null) as (PollRow & { vote_seq: number }) | null;
+  if (!row) return null;
+  const { vote_seq, ...rest } = row;
+  return {
+    poll: rest,
+    seq: vote_seq,
+    candidates: candidates!.results as CandidateRow[],
+    votes: votes!.results as VoteRow[],
+  };
+}
+
+/**
+ * 描き直しの担当を手放す。seq を渡したときは、その後に回答が入っていなければ（vote_seq が同じなら）だけ手放す。
+ * 手放せたら true。false なら新しい回答があるので、もう一度描き直す。
+ */
+export async function releasePollRefresh(db: D1Database, pollId: number, seq: number | null): Promise<boolean> {
+  const res = await db
+    .prepare(`UPDATE polls SET refresh_lock_at = NULL WHERE id = ?1 AND (?2 IS NULL OR vote_seq = ?2)`)
+    .bind(pollId, seq)
+    .run();
+  return res.meta.changes > 0;
 }
 
 /**
