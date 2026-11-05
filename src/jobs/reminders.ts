@@ -10,7 +10,7 @@ import {
 import { DiscordErrorCode, discordRequest, isDiscordError } from "../discord/rest";
 import { subrequestBudget, type Env } from "../env";
 import { logError } from "../interaction";
-import { mention, messageLink } from "../render";
+import { escapeMarkdown, mention, messageLink } from "../render";
 import { formatRange } from "../time";
 
 const HOUR = 60 * 60;
@@ -88,7 +88,7 @@ function reminderText(event: ReminderCandidate, kind: ReminderKind, now: number)
   const link = event.message_id ? `\n告知: ${messageLink(event.guild_id, event.channel_id, event.message_id)}` : "";
   // スマホの通知でも読めるよう、日時はタイムスタンプ記法ではなく文字列で書く
   const range = formatRange(event.start_at, event.duration_minutes, event.timezone, now);
-  return `⏰ **リマインド**（${when}）「${event.title}」は ${range} です。${link}`;
+  return `⏰ **リマインド**（${when}）「${escapeMarkdown(event.title)}」は ${range} です。${link}`;
 }
 
 async function sendReminder(
